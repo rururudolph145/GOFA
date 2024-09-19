@@ -578,7 +578,7 @@ class LlamaHelper(torch.nn.Module):
         return output_emb, answer_prompt, target_mask
 
     def encode(self, data, input, prompt=None):
-        raise NotImplementedError("no encdoe for llama")
+        raise NotImplementedError("no encode for llama")
 
 
     def decode(self, data, input, prompt=None):
