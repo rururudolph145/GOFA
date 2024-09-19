@@ -46,6 +46,8 @@ def main(params):
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
         num_layers=params.num_layers)
     model_args.dec_lora = params.dec_lora
+    model_args.llama_pretrain_checkpoint = params.llama_pretrain_checkpoint
+    model_args.mistral_pretrain_checkpoint = params.mistral_pretrain_checkpoint
     training_args.model_max_length = params.llm_max_length
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
@@ -58,14 +60,14 @@ def main(params):
         #                                          Pretrain Task                                             #
         ######################################################################################################
 
-        train_task = GOFAPretrainTaskWrapper(["mag240m", "ultrachat200k", "wiki_graph", "wikikg90m"],
-                                             root=params.data_root_path, save_name=f"pretrain_{params.last_epochs}", fast_data_load=True, single_node_cs=True)
-        # train_task = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-        #                                     split="train", save_suffixs=["llm_arxiv_train"], add_prompt_graph=False, left_keep_length=128)
+        # train_task = GOFAPretrainTaskWrapper(["mag240m"],
+        #                                      root=params.data_root_path, save_name=f"pretrain_{params.last_epochs}", fast_data_load=True, single_node_cs=True)
+        train_task = GOFAPretrainTaskWrapper(["mag240m", "mag240m", "mag240m"], root=params.data_root_path,
+                                            save_name=["pretrain_0", "pretrain_1", "pretrain_2"], fast_data_load=True, single_node_cs=True, from_saved=True)
         val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="val", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
+                                          split="val", num_workers=params.num_workers, single_node_cs=True)
         test_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="test", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
+                                          split="test", num_workers=params.num_workers, single_node_cs=True)
 
         # breakpoint()
 
