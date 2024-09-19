@@ -1,11 +1,12 @@
 root_path: ""
-data_root_path: "./TAGDataset"
+#data_root_path: "./TAGDataset"
+data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
 llama_pretrain_checkpoint: "../cache_data/cache_data/model/llama-2-7b-chat-finetuned-icae_zeroweight_llama2.pt"
-mistral_pretrain_checkpoint: "./cache_data/model/mistral_7b_ft_icae.safetensors"
+mistral_pretrain_checkpoint: "/project/tantra/liuhao/OFAv2/cache_data/model/mistral_7b_ft_icae.safetensors"
 num_bases: 4
 emb_dim: 1024
 num_layers: 6
-mlp_type: "llama"
+mlp_type: "gp"
 dropout: 0.0
 JK: "last"
 lr: 0.0003
@@ -37,7 +38,7 @@ mode: "autoencoder"
 temp: 0.1
 compressed_layer: 32
 max_nodes_per_hop: 5
-grad_acc_step: 8
+grad_acc_step: 32
 save_model:
   save: False
   steps:

@@ -125,7 +125,9 @@ def main(params):
                                             way=params.ways,
                                             num_workers=params.num_workers,
                                             instruction=params.instructs,
-                                            selection=params.selections)
+                                            selection=params.selections,
+                                            from_saved=False,
+                                            save_data=True)
 
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
@@ -138,7 +140,9 @@ def main(params):
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selections=selection,
+                                            from_saved=False,
+                                            save_data=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
 
@@ -151,9 +155,13 @@ def main(params):
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selections=selection,
+                                            from_saved=False,
+                                            save_data=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
+
+        # breakpoint()
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
