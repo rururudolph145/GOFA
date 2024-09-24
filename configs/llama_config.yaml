@@ -12,7 +12,7 @@ JK: "last"
 lr: 0.0001
 l2: 0.1
 grad_clip: 0.5
-num_epochs: 1
+num_epochs: 0
 last_epochs: 0
 batch_size: 1
 eval_batch_size: 1
@@ -29,7 +29,7 @@ rwpe:
 task_names:
   - arxiv
 llm_name: "icae"
-base_llm: "mistral7b"
+base_llm: "mistral7blora"
 llm_max_length: 2048
 llm_b_size: 1
 val_interval: 1
@@ -40,7 +40,7 @@ compressed_layer: 32
 max_nodes_per_hop: 5
 grad_acc_step: 4
 save_model:
-  save: True
+  save: False
   steps:
   monitor: False
   time: 5
