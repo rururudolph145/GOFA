@@ -2,6 +2,7 @@ from collections import namedtuple, OrderedDict
 
 import torch
 import numpy as np
+import random
 
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.layer.pyg import RGCNEdgeConv
@@ -124,8 +125,8 @@ class GOFA(torch.nn.Module):
             edge_t = g.node_ids[i][g.edge_index.cpu()[:,:-2*len(g.node_map)]]
             edge_t = ', '.join(edge_t[0] + ' connects to ' + edge_t[1])
             # t = all_x + '. ' + edge_t + '. ' + g.question[i]
-            t = all_x + '. ' + '. ' + g.question[i]
-            t = '[INST]\n' + t + g.question[i] + '\n[/INST]\n\n'
+            t = ' Respond only with accurate and verifiable information. Provide only the answer without explanation. For example, if asked about the relative location of two items, respond with left or right. For binary questions, answer with yes or no. If you are unsure or if there is insufficient data, respond with I am unable to provide a response due to limited information.' + all_x + '. ' + g.question[i]
+            t = '[INST]\n' + t + '\n[/INST]\n\n'
             com_text_inputs.append(t)
 
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
@@ -167,6 +168,41 @@ class GOFA(torch.nn.Module):
                            answer=answer_texts)
 
     def auto_encode(self, g):
+        # breakpoint()
+        # print(g.target_index)
+        # if len(g.target_index[0][0]) == 2:
+        #     # target_ids = []
+        #     # for i in g.target_index[0][0]:
+        #     #     print(i)
+        #     #     print(g.node_ids)
+        #     #     target_ids.append(g.node_ids[0][int(i)])
+        #     target_ids = g.node_ids[0][g.target_index[0][0]]
+        #     if target_ids[0] in g.question[0]:
+        #         g.question[0] = g.question[0].replace(target_ids[0], target_ids[1])
+        #         for i in range(len(g.x)):
+        #             if g.x[i].startswith('Please output the content'):
+        #                 g.x[i] = g.x[i].replace(target_ids[0], target_ids[1])
+        #     else:
+        #         g.question[0] = g.question[0].replace(target_ids[1], target_ids[0])
+        #         for i in range(len(g.x)):
+        #             if g.x[i].startswith('Please output the content'):
+        #                 g.x[i] = g.x[i].replace(target_ids[1], target_ids[0])
+            # breakpoint()
+        target_ids = g.node_ids[0][g.target_index[0][0]]
+        for ind in range(len(target_ids)):
+            if target_ids[ind] in g.question[0]:
+                opt_ids = list(range(len(target_ids)))
+                opt_ids.remove(ind)
+                rand_id = random.choice(opt_ids)
+                g.question[0] = g.question[0].replace(target_ids[ind], target_ids[rand_id])
+                print(f'In prompt, replace {str(target_ids[ind])} with {str(target_ids[rand_id])}')
+                print(f'{g.x[g.target_index[0][0]]}')
+                for i in range(len(g.x)):
+                    if g.x[i].startswith('Please output the content'):
+                        g.x[i] = g.x[i].replace(target_ids[ind], target_ids[rand_id])
+                break
+
+
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
             text_inputs = np.concatenate([g.x, g.edge_attr], axis=0)
@@ -180,16 +216,18 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        prompt_texts = ["" if p.startswith("Please complete the sentence") else p for p in prompt_texts]
         emb = emb[g.question_index]
         answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_texts)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
-        return GNNLMOutput(logits=answer_logits[masks], pred_text=self.logit_to_text(answer_logits, masks),
+        return GNNLMOutput(logits=answer_logits[masks][:,:32000], pred_text=self.logit_to_text(answer_logits, masks),
                            answer_id=answer_id, answer=answer_texts)
 
     def generate(self, g):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        prompt_texts = ["" if p.startswith("Please complete the sentence") else p for p in prompt_texts]
         emb = emb[g.question_index]
         generated_text = self.llm_model.generate(emb, prompt=prompt_texts)
         for i, txt in enumerate(generated_text):
@@ -197,6 +235,9 @@ class GOFA(torch.nn.Module):
             print("-"*120)
             print_text_side_by_side("target: "+answer_texts[i], "gen: "+generated_text[i])
             print("="*120)
+            print(g.node_ids[0][g.target_index[0][0]])
+            print(g.node_ids)
+            print("+"*120)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
         return GNNLMOutput(logits=torch.randn([1, 32132]).to(emb.device), pred_text=generated_text, answer_id=torch.tensor([1]).to(emb.device),
                            answer=answer_texts)

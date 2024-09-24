@@ -60,23 +60,25 @@ def main(params):
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
-        task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
-                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
+        # task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
+        #               "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
+        task_names = ["arxiv"]
+        save_names = ["pretrain_0"]
 
-        save_names = ["pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
-                      "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
-                      "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_"]
+        # save_names = ["pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
+        #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
+        #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_"]
 
-        save_names = [name + str(params.last_epochs) for name in save_names]
-        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True)
+        # save_names = [name + str(params.last_epochs) for name in save_names]
+        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True, from_saved=True)
 
-        val_tasks = GOFAPretrainTaskWrapper(["cora", "ultrachat200k"], root=params.data_root_path,
-                                            split="val", sample_size=100, save_name="pretrain_val",
-                                            num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
+        val_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["val_fb_IR"], pretrain_tasks=['IR'], content_to_key=False, from_saved=False, save_data=True,
+                                            split="val", sample_size=10,)
 
-        test_tasks = GOFAPretrainTaskWrapper(["cora", "ultrachat200k"], root=params.data_root_path,
-                                            split="test", sample_size=100, save_name="pretrain_test",
-                                            num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
+        test_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["test_fb_IR"], pretrain_tasks=['IR'], from_saved=True, save_data=True,
+                                            split="test", sample_size=100, )
+
+        # breakpoint()
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 

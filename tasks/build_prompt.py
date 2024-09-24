@@ -292,7 +292,7 @@ def scene_graph_prompt(data, task_class, **kwargs):
     question = data.question
     graph_description = task_class.dataset.graph_description
     # directly use the initial prompt, mainly for supervised fine-tuning
-    # data.question = graph_description + question
+    data.question = graph_description + question
     # data.question = graph_description + ' Please first find question related nodes in the graph and output the nodeid then answer the question based on the node content. ' + question
-    data.question = graph_description + ' Please first find question related nodes in the graph then answer the question based on the node content. ' + question
+    # data.question = graph_description + ' Please first find question related nodes in the graph then answer the question based on the node content. ' + question
     return data

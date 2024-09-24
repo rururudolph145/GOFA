@@ -62,8 +62,13 @@ def main(params):
 
         # train_task = GOFAPretrainTaskWrapper(["mag240m"],
         #                                      root=params.data_root_path, save_name=f"pretrain_{params.last_epochs}", fast_data_load=True, single_node_cs=True)
-        train_task = GOFAPretrainTaskWrapper(["mag240m", "mag240m", "mag240m"], root=params.data_root_path,
-                                            save_name=["pretrain_0", "pretrain_1", "pretrain_2"], fast_data_load=True, single_node_cs=True, from_saved=True)
+        # train_task = GOFAPretrainTaskWrapper(["mag240m", "mag240m", "mag240m"], root=params.data_root_path,
+        #                                     save_name=["pretrain_0", "pretrain_1", "pretrain_2"], fast_data_load=True, single_node_cs=True, from_saved=True)
+        # train_task = GOFAPretrainTaskWrapper(["mag240m"], root=params.data_root_path,
+        #                                      save_name=["pretrain_0"], fast_data_load=True,
+        #                                      single_node_cs=True, from_saved=True)
+        train_task = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
+                                                 split="train", sample_size=1000, single_node_cs=True)
         val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
                                           split="val", num_workers=params.num_workers, single_node_cs=True)
         test_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
