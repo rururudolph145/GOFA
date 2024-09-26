@@ -90,6 +90,7 @@ class GraphTextPredLightning(BaseTemplate):
     def on_validation_epoch_end(self):
         super().on_validation_epoch_end()
         self.model.decode = self.old_decode
+
     #
     #
     # def optimizer_step(
