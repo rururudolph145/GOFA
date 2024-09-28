@@ -1,6 +1,8 @@
 run_mode: "ft"
 load_model: True
-load_dir: "/storage1/yinjie.tang/Active/jerry.kong/gofa_exp/saved_exp/2024-09-25_11:25:25.656384_809"
+data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
+load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_3.pth"
+#load_dir: "./saved_exp/2024-09-26_15:07:16.329065_596/best_ckpt.pth"
 grad_acc_step: 32
 last_epochs: 0
 num_epochs: 1
@@ -18,18 +20,15 @@ train_task_names:
   - wikikg90m
   - arxiv_link
   - arxiv
-  - pubmed_node
   - pubmed_link
 
 sample_size_per_task:
   - 100000
   - 100000
-  - 40000
   - 50000
-  - 5000
-  - 5000
+  - 200000
+  - 30000
 hops:
-  - 3
   - 3
   - 3
   - 3
@@ -37,7 +36,6 @@ hops:
   - 3
 
 train_max_nodes_per_hops:
-  - 5
   - 5
   - 5
   - 5
@@ -57,7 +55,7 @@ eval_task_names:
 inf_sample_size_per_task: 500
 inf_hops:
   - 3
-  - 3
+  - 2
   - 3
   - 3
   - -1
@@ -66,7 +64,7 @@ inf_hops:
 
 inf_max_nodes_per_hops:
   - 10
-  - 10
+  - 3
   - 10
   - 10
   - -1
@@ -75,7 +73,7 @@ inf_max_nodes_per_hops:
 
 inf_ways:
   - 7
-  - 3
+  - 2
   - 10
   - 10
   - 2
