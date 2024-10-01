@@ -1,8 +1,14 @@
 from collections import namedtuple, OrderedDict
+from xml.dom.minidom import Entity
 
 import torch
 import numpy as np
 import random
+
+from docutils.nodes import target
+from numpy.core.defchararray import startswith
+# from termcolor import cprint
+import re
 
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.layer.pyg import RGCNEdgeConv
@@ -77,6 +83,12 @@ class GOFA(torch.nn.Module):
         elif mode == "nographgentemp":
             self.encode = self.llm_gen_scene_graph
             self.decode = lambda x: x
+        elif mode == "nographgenspd":
+            self.encode = self.llm_gen_spd
+            self.decode = lambda x: x
+        elif mode == "nographgennb":
+            self.encode = self.llm_gen_neighbor
+            self.decode = lambda x: x
         else:
             # TODO: not implemented
             raise NotImplementedError(mode + " mode not implemented")
@@ -95,17 +107,40 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id, answer=answer_texts)
 
     def llm_ft(self, g):
-        text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
-        all_x = g.x[g.node_map.cpu().numpy()].tolist()
-        truncated_x = [t[:80] for t in all_x[1:]]
-        all_x = ' '.join(all_x[:1] + truncated_x)
+        def get_neighbor_text(g, target_index, truncate_len):
+            question_index = g.node_map[g.question_index.cpu().numpy()].cpu().numpy()
+            exl_index = target_index.tolist() + question_index.tolist()
+            neighbor_index = g.node_map[
+                ~np.isin(g.node_map.cpu().numpy(), exl_index)].cpu().numpy()
+            neighbor_texts = g.x[neighbor_index].tolist()
+            neighbor_texts = [t[:truncate_len] for t in neighbor_texts]
+            return neighbor_texts
+
+        def get_edge_text(g, edge_index, node_ids):
+            # filter the prompt edges
+            edge_index = g.edge_index.cpu().numpy()[:, :-2 * len(g.target_index) * len(g.question)]
+            # filter bidirectional edge
+            mask = edge_index[0] < edge_index[1]
+            edge_index = edge_index[:, mask]
+            edge_text = node_ids[edge_index]
+            edge_text = ', '.join(edge_text[0] + ' connects with ' + edge_text[1])
+            return edge_text + '. '
+
+        truncate_len = 256
+        nb_truncate_len = 256
+        # print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024 ** 2} MB")
+        # print(f"Cached memory: {torch.cuda.memory_reserved() / 1024 ** 2} MB")
+        print(f"Max memory: {torch.cuda.max_memory_allocated() / 1024 ** 2} MB")
+        target_index = g.node_map[g.target_index.cpu().numpy()].cpu().numpy()
+        text_inputs = g.x[target_index].tolist()
+        text_inputs = [' '.join(t.split()[:truncate_len]) for t in
+                       text_inputs + ['These nodes have following neighbor nodes'] + get_neighbor_text(g, target_index, nb_truncate_len) ]
+        text_inputs = '. '.join(text_inputs)
+        text_inputs += get_edge_text(g, g.edge_index.cpu().numpy(), g.node_ids[0])
+
         com_text_inputs = []
-        for i in range(len(text_inputs)):
-            # add edge text description
-            edge_t = g.node_ids[i][g.edge_index.cpu()[:,:-2]]
-            edge_t = ', '.join(edge_t[0] + ' connects to ' + edge_t[1])
-            t = all_x + '. ' + edge_t + '. ' + g.question[i]
-            # t = text_inputs[i] + g.question[i]
+        for i in range(len(g.question)):
+            t = text_inputs + g.question[i]
             com_text_inputs.append(t)
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
 
@@ -140,21 +175,26 @@ class GOFA(torch.nn.Module):
         return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text, answer_id=torch.tensor([1]),
                            answer=answer_texts)
 
+    def llm_gen_spd(self, g):
+        # breakpoint()
 
-    def llm_gen(self, g):
-        text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
+        def get_edge_text(g, edge_index, node_ids):
+            # filter the prompt edges
+            edge_index = g.edge_index.cpu().numpy()[:, :-2 * len(g.target_index[0][0]) * len(g.question)]
+            # filter bidirectional edge
+            mask = edge_index[0] < edge_index[1]
+            edge_index = edge_index[:, mask]
+            edge_text = node_ids[edge_index]
+            edge_text = ', '.join(edge_text[0] + ' connects with ' + edge_text[1])
+            return edge_text + '. '
+
+        text_inputs = get_edge_text(g, g.edge_index.cpu().numpy(), g.node_ids[0])
         com_text_inputs = []
+
+        # TODO: current version only support g.question==1
         for i in range(len(g.question)):
-            # t = '[INST]\n' + g.question[i] + '\n[/INST]\n\n'
-            if len(text_inputs) == len(g.question):
-                t = '[INST]\n' + text_inputs[i] + g.question[i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
-            elif len(text_inputs) == len(g.question) * 2:
-                t = '[INST]\n' + text_inputs[2*i] + text_inputs[2*i+1] + g.question[
-                    i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
-            elif len(text_inputs) > len(g.question):
-                t = '[INST]\n' + g.question[i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
-            else:
-                raise ValueError('Text_input length did not match question length.')
+            cut_ind = g.question[i].find('generate all')
+            t = '[INST]\n' + text_inputs + g.question[i][:cut_ind] + 'Please directly and only output the total number, no other information' + '\n[/INST]\n\n'
             com_text_inputs.append(t)
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         generated_text = self.llm_model.generate(com_text_inputs)
@@ -167,41 +207,145 @@ class GOFA(torch.nn.Module):
         return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text, answer_id=torch.tensor([1]),
                            answer=answer_texts)
 
+    def llm_gen_neighbor(self, g):
+        # breakpoint()
+        # Find 1-hop neighbors of target_index
+        def find_one_hop_neighbors(edge_index, target_index):
+            source_nodes = edge_index[0]
+            destination_nodes = edge_index[1]
+            # Find all nodes that are connected to the target (incoming and outgoing edges)
+            one_hop_neighbors = np.unique(
+                np.concatenate([
+                    source_nodes[destination_nodes == target_index],  # Incoming edges to target
+                    destination_nodes[source_nodes == target_index]  # Outgoing edges from target
+                ])
+            )
+            return one_hop_neighbors
+
+        def get_neighbor_text(g, target_index, truncate_len):
+            question_index = g.node_map[g.question_index.cpu().numpy()].cpu().numpy()
+            exl_index = target_index.tolist() + question_index.tolist()
+            neighbor_index = g.node_map[
+                ~np.isin(g.node_map.cpu().numpy(), exl_index)].cpu().numpy()
+            neighbor_texts = g.x[neighbor_index].tolist()
+            neighbor_texts = [' '.join(t.split()[:truncate_len]) for t in neighbor_texts]
+            return neighbor_texts
+
+        def get_edge_text(g, edge_index, node_ids):
+            # filter the prompt edges
+            edge_index = g.edge_index.cpu().numpy()[:, :-2 * len(g.target_index) * len(g.question)]
+            # filter bidirectional edge
+            mask = edge_index[0] < edge_index[1]
+            edge_index = edge_index[:, mask]
+            edge_text = node_ids[edge_index]
+            edge_text = ', '.join(edge_text[0] + ' connects with ' + edge_text[1])
+            return edge_text + '. '
+
+        truncate_len = 512
+        nb_truncate_len = 512
+        target_index = g.node_map[g.target_index.cpu().numpy()].cpu().numpy()
+        text_inputs = g.x[target_index].tolist()
+        text_inputs = [' '.join(t.split()[:truncate_len]) for t in
+                       text_inputs + ['These nodes have following neighbor nodes'] + get_neighbor_text(g, target_index, nb_truncate_len) ]
+        text_inputs = '. '.join(text_inputs)
+        text_inputs += get_edge_text(g, g.edge_index.cpu().numpy(), g.node_ids[0])
+        # print(f"Max memory: {torch.cuda.max_memory_allocated() / 1024 ** 2} MB")
+
+        # breakpoint()
+        # one_hop_index = find_one_hop_neighbors(g.edge_index.cpu().numpy(), target_index[0])
+        # one_hop_text = g.x[one_hop_index].tolist()
+        # one_hop_text = ' '.join(one_hop_text)
+        com_text_inputs = []
+
+        # TODO: current version only support g.question==1
+        for i in range(len(g.question)):
+            if len(g.target_index) == len(g.question):
+                t = '[INST]\n' + text_inputs + g.question[i] + ' Please only strictly answer one category name, no other information or explanation. \n[/INST]\n\n'
+            elif len(g.target_index) == len(g.question) * 2:
+                t = '[INST]\n' + text_inputs + g.question[
+                    i] + ' Please only strictly answer yes or no, no other information or explanation. \n[/INST]\n\n'
+            elif len(g.target_index) > len(g.question):
+                t = '[INST]\n' + text_inputs + g.question[i] + ' Please directly answer the question, no other information or explanation. \n[/INST]\n\n'
+            else:
+                raise ValueError('Text_input length did not match question length.')
+            com_text_inputs.append(t)
+        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
+        generated_text = self.llm_model.generate(com_text_inputs)
+        # for i, txt in enumerate(generated_text):
+        #     print_fixed_length(f"question: {com_text_inputs}")
+        #     print("-" * 120)
+        #     print_text_side_by_side("target: " + answer_texts[i], "gen: " + generated_text[i])
+        #     print("=" * 120)
+        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
+        return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text, answer_id=torch.tensor([1]),
+                           answer=answer_texts)
+
+
+
+    def llm_gen(self, g):
+        target_index = g.node_map[g.target_index.cpu().numpy()].cpu().numpy()
+        text_inputs = g.x[target_index].tolist()
+        com_text_inputs = []
+
+        for i in range(len(g.question)):
+            if len(g.target_index) == len(g.question):
+                t = '[INST]\n' + text_inputs[0] + g.question[i] + ' Please only strictly answer one category name, no other information or explanation. \n[/INST]\n\n'
+            elif len(g.target_index) == len(g.question) * 2:
+                # t = '[INST]\n' + text_inputs[2*i] + text_inputs[2*i+1] + g.question[
+                #     i] + ' Please directly answer the question, no other information or explanation. \n[/INST]\n\n'
+                t = '[INST]\n' + text_inputs[2 * i] + text_inputs[2 * i + 1] + g.question[
+                    i] + ' Please only strictly answer one category name, no other information or explanation. \n[/INST]\n\n'
+            elif len(g.target_index) > len(g.question):
+                t = '[INST]\n' + g.question[i] + ' Please directly answer the question, no other information or explanation. \n[/INST]\n\n'
+            else:
+                raise ValueError('Text_input length did not match question length.')
+            com_text_inputs.append(t)
+        # breakpoint()
+        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
+        generated_text = self.llm_model.generate(com_text_inputs)
+        # for i, txt in enumerate(generated_text):
+        #     print_fixed_length(f"question: {com_text_inputs}")
+        #     print("-" * 120)
+        #     print_text_side_by_side("target: " + answer_texts[i], "gen: " + generated_text[i])
+        #     print("=" * 120)
+        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
+        return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text, answer_id=torch.tensor([1]),
+                           answer=answer_texts)
+
     def auto_encode(self, g):
         # breakpoint()
-        # print(g.target_index)
-        # if len(g.target_index[0][0]) == 2:
-        #     # target_ids = []
-        #     # for i in g.target_index[0][0]:
-        #     #     print(i)
-        #     #     print(g.node_ids)
-        #     #     target_ids.append(g.node_ids[0][int(i)])
-        #     target_ids = g.node_ids[0][g.target_index[0][0]]
-        #     if target_ids[0] in g.question[0]:
-        #         g.question[0] = g.question[0].replace(target_ids[0], target_ids[1])
+        # cprint(f'True target: {g.node_map[g.target_index.cpu().numpy()].cpu().numpy()}; Wrong target: {g.target_index.cpu().numpy()}', 'yellow')
+        # target_ids = g.node_ids[0][g.target_index[0][0]]
+        # for ind in range(len(target_ids)):
+        #     if target_ids[ind] in g.question[0]:
+        #         opt_ids = list(range(len(target_ids)))
+        #         opt_ids.remove(ind)
+        #         rand_id = random.choice(opt_ids)
+        #         g.question[0] = g.question[0].replace(target_ids[ind], target_ids[rand_id])
+        #         cprint(f'In prompt, replace {str(target_ids[ind])} with {str(target_ids[rand_id])}', "green")
+        #         print(f'{g.x}')
         #         for i in range(len(g.x)):
         #             if g.x[i].startswith('Please output the content'):
-        #                 g.x[i] = g.x[i].replace(target_ids[0], target_ids[1])
-        #     else:
-        #         g.question[0] = g.question[0].replace(target_ids[1], target_ids[0])
-        #         for i in range(len(g.x)):
-        #             if g.x[i].startswith('Please output the content'):
-        #                 g.x[i] = g.x[i].replace(target_ids[1], target_ids[0])
-            # breakpoint()
-        target_ids = g.node_ids[0][g.target_index[0][0]]
-        for ind in range(len(target_ids)):
-            if target_ids[ind] in g.question[0]:
-                opt_ids = list(range(len(target_ids)))
-                opt_ids.remove(ind)
-                rand_id = random.choice(opt_ids)
-                g.question[0] = g.question[0].replace(target_ids[ind], target_ids[rand_id])
-                print(f'In prompt, replace {str(target_ids[ind])} with {str(target_ids[rand_id])}')
-                print(f'{g.x[g.target_index[0][0]]}')
-                for i in range(len(g.x)):
-                    if g.x[i].startswith('Please output the content'):
-                        g.x[i] = g.x[i].replace(target_ids[ind], target_ids[rand_id])
-                break
+        #                 g.x[i] = g.x[i].replace(target_ids[ind], target_ids[rand_id])
+        #         break
 
+        # target_ids = g.node_ids[0][g.target_index[0][0]]
+        # for ind in range(len(g.x)):
+        #     cur_nodeid = re.findall(r'\[(.*?)\]', g.x[ind])
+        #     if cur_nodeid[0] in g.question[0]:
+        #         if not g.x[ind].startswith('Please output'):
+        #             print(g.x[ind])
+        #             nodename = re.findall(r'Entity name:\s*([^,]+)', g.x[ind])
+        #             print(cur_nodeid)
+        #             print(nodename)
+        #             if len(nodename):
+        #                 g.question[0] = g.question[0].replace(cur_nodeid[0], nodename[0])
+        #                 loc = g.x[ind].find('Entity description:')
+        #                 g.x[ind] = g.x[ind][:loc] + 'Entity description: Today is a very sunny day.'
+        #                 print(g.x[ind])
+        #             break
+
+        # print(g.x)
 
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
@@ -235,9 +379,9 @@ class GOFA(torch.nn.Module):
             print("-"*120)
             print_text_side_by_side("target: "+answer_texts[i], "gen: "+generated_text[i])
             print("="*120)
-            print(g.node_ids[0][g.target_index[0][0]])
-            print(g.node_ids)
-            print("+"*120)
+            # print(g.node_ids[0][g.target_index[0][0]])
+            # print(g.node_ids)
+            # print("+"*120)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
         return GNNLMOutput(logits=torch.randn([1, 32132]).to(emb.device), pred_text=generated_text, answer_id=torch.tensor([1]).to(emb.device),
                            answer=answer_texts)
@@ -258,7 +402,10 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id, answer=answer_texts)
 
     def save_partial(self, save_dir):
-        state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
+        if self.mode.startswith('nograph'):
+            state_dict = OrderedDict()
+        else:
+            state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
         full_state_dict = self.state_dict()
         for k in full_state_dict:
             if "default" in k:

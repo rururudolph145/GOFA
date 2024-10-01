@@ -22,7 +22,7 @@ data_path:
 offline_log: False
 test_rep: 1
 log_project: "ggama"
-exp_name: "mistral_pretrain"
+exp_name: "perp_3c"
 train_sample_size: -1
 eval_sample_size: -1
 rwpe:

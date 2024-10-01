@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks.progress import TQDMProgressBar
@@ -68,6 +69,7 @@ def lightning_fit(
         accumulate_grad_batches=grad_acc_step, val_check_interval=val_interval
     )
     trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
+    model.model.save_partial(os.path.join("/storage1/yinjie.tang/Active/hliu/saved_exp/ft_ckpt.pth"))
     if load_best:
         model_dir = trainer.checkpoint_callback.best_model_path
         deep_speed = False

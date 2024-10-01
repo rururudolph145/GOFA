@@ -602,7 +602,7 @@ class LlamaHelper(torch.nn.Module):
         prompt_answer_ids = prompt_ids.to(device=cur_device, dtype=torch.long)
 
         with torch.no_grad():
-            outputs = self.model.icae.generate(prompt_answer_ids, max_length=2048, num_return_sequences=1, pad_token_id = self.model.eos_id)
+            outputs = self.model.icae.generate(prompt_answer_ids, max_length=self.model.training_args.model_max_length, num_return_sequences=1, pad_token_id = self.model.eos_id)
 
         generated_text = [self.model.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
         generated_text = [self.extract_content_after_inst(t) for t in generated_text]
@@ -615,8 +615,8 @@ class LlamaHelper(torch.nn.Module):
         start_index = generated_text.find(closing_tag)
 
         if start_index == -1:
-            # If the closing tag is not found, return the entire text
-            return generated_text
+            # If the closing tag is not found, return the empty text
+            return ' '
 
         # Extract the content after the closing tag
         content_after_inst = generated_text[start_index + len(closing_tag):].strip()
