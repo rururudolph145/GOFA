@@ -25,8 +25,23 @@ def extract_numbers(text):
     return [float(num) for num in numbers]
 
 def sentence_base(func, output, batch):
-    pred_text = output.pred_text
+    o_pred_text = output.pred_text
+    pred_text = []
+    for t in o_pred_text:
+        eos = t.find('</s>')
+        if eos >= 0:
+            t = t[:eos]
+        pred_text.append(t)
     answer = batch.label[batch.label_map.cpu().numpy()].tolist()
+    # o_answer = batch.label[batch.label_map.cpu().numpy()].tolist()
+    # answer = []
+    # for a in o_answer:
+    #     ind = a.find('.')
+    #     if ind >= 0:
+    #         a = a[:ind]
+    #     answer.append(a)
+    # print(f'{pred_text}, {answer}')
+
     return func(pred_text, answer)
 
 
