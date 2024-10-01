@@ -16,11 +16,12 @@ from lightning_model import GraphTextPredLightning
 from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
-from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
+from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity, MeanSquaredError
 from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS import get_evaluators
+from TAGLAS.evaluation.interface import Evaluator
 from TAGLAS.data import TAGData
 import torch
 from types import SimpleNamespace
@@ -71,19 +72,45 @@ def main(params):
         #               "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
         task_names = ["arxiv"]
         save_names = ["pretrain_0"]
+        filter_func = data_size_filter
 
         # save_names = ["pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
         #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
         #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_"]
 
         # save_names = [name + str(params.last_epochs) for name in save_names]
-        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True, from_saved=True)
+        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True, from_saved=True, filter_func=filter_func)
 
-        val_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["val_fb_IR"], pretrain_tasks=['IR'], content_to_key=False, from_saved=False, save_data=True,
-                                            split="val", sample_size=10,)
+        # val_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["pretrain_IR_ck_0"], pretrain_tasks=['IR'], content_to_key=False, from_saved=False, save_data=False,
+        #                                     split="val", sample_size=20, filter_func=filter_func)
+        #
+        # test_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["test_fb_IR"], pretrain_tasks=['IR'], from_saved=False, save_data=True,
+        #                                     split="test", sample_size=100, filter_func=filter_func)
 
-        test_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["test_fb_IR"], pretrain_tasks=['IR'], from_saved=True, save_data=True,
-                                            split="test", sample_size=100, )
+        # Test pretrain perplexity ["cora", "wikics", "products"]
+        val_tasks = GOFAPretrainTaskWrapper(["cora", "wikics", "products"], root=params.data_root_path, split="all", sample_size=3000,
+                                             pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
+                                             num_additional_sentences=0,
+                                             single_node_cs=True)
+        # val_tasks = GOFAPretrainTaskWrapper(["wikics"], root=params.data_root_path, split="all",
+        #                                     sample_size=1000,
+        #                                     pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
+        #                                     num_additional_sentences=0)
+
+        test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="all", sample_size=3000,
+                                             pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False, num_additional_sentences=0,
+                                             single_node_cs=True)
+
+        # Test pretrain spd
+        # val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path, save_name=["pretrain_0"], pretrain_tasks=['IR'], content_to_key=True, from_saved=True, save_data=False,
+        #                                     split="val", sample_size=10, filter_func=filter_func)
+        # val_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=2000,
+        #                                     pretrain_tasks=["CN"], num_workers=params.num_workers,
+        #                                     num_SP=3, from_saved=False, save_data=False, SP_from_targets=False)
+        #
+        # test_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=2000,
+        #                                      pretrain_tasks=["CN"], num_workers=params.num_workers,
+        #                                      num_SP=3, from_saved=False, save_data=False, SP_from_targets=True)
 
         # breakpoint()
 
@@ -91,14 +118,24 @@ def main(params):
 
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
 
+        # val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name="val", metric="text_mse", classes=32132,
+        #                         meta_data={"eval_func": sentence_base})]
+        # test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                           state_name="test", metric="text_mse", classes=32132,
+        #                           meta_data={"eval_func": sentence_base})]
+
         val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name="val", metric="perp", classes=32132,
-                                meta_data={"eval_func": sentence_perplexity})]
+                                  state_name="val", metric="perp", classes=32132,
+                                  meta_data={"eval_func": sentence_perplexity})]
 
         test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
                                  state_name="test", metric="perp", classes=32132,
                                  meta_data={"eval_func": sentence_perplexity})]
+
+        # evlter = [Evaluator("text_mse"), Evaluator("text_mse")]
         evlter = []
+
 
 
     else:
@@ -219,6 +256,8 @@ def main(params):
                 evlter.append(MeanMetric())
             elif dt.metric == "mae":
                 evlter.append(MeanAbsoluteError())
+            elif dt.metric == 'mse':
+                evlter.append(MeanSquaredError())
             elif dt.metric == "perp":
                 evlter.append(Perplexity(ignore_index=model.llm_model.model.tokenizer.pad_token_id))
             else:
