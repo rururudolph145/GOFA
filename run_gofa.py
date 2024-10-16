@@ -48,7 +48,7 @@ def main(params):
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
-        num_layers=params.num_layers)
+        num_layers=params.num_layers, gnn_type=params.gnn_type, interleave=params.interleave, gating=params.gating)
     model_args.dec_lora = params.dec_lora
     model_args.llama_pretrain_checkpoint = params.llama_pretrain_checkpoint
     model_args.mistral_pretrain_checkpoint = params.mistral_pretrain_checkpoint
@@ -123,7 +123,6 @@ def main(params):
         train_task = GOFAFineTuneTaskWrapper(train_tasks,
                                             root=params.data_root_path,
                                             split="train",
-                                            save_name="ft_0",
                                             hop=params.hops,
                                             max_nodes_per_hop=params.train_max_nodes_per_hops,
                                             sample_size=params.sample_size_per_task,
@@ -134,7 +133,7 @@ def main(params):
                                             selection=params.selections,
                                             save_data=True,
                                             from_saved=True,
-                                            fast_data_load=True,)
+                                            fast_data_load=True)
 
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
@@ -143,12 +142,12 @@ def main(params):
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=10,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
                                             selection=selection, save_data=True,
-                                            from_saved=False,) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
 
@@ -157,14 +156,14 @@ def main(params):
                                             split="test",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=inf_sample_size,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
                                             selection=selection,save_data=True,
-                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators

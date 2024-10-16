@@ -13,7 +13,7 @@ from transformers import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNorm, LlamaModel, LlamaDecoderLayer, \
     logger, BaseModelOutputWithPast, Cache, DynamicCache, _prepare_4d_causal_attention_mask_for_sdpa, \
     _prepare_4d_causal_attention_mask, CausalLMOutputWithPast, LlamaForCausalLM
-from .gnn import GOFAGNNConv
+from .gnn import GOFAGNNConv, GOFAGNNConvFullAtt
 from transformers import MistralConfig
 from transformers.models.mistral.modeling_mistral import MistralAttention, MistralRMSNorm, MistralModel, MistralDecoderLayer, MistralForCausalLM
 
@@ -36,7 +36,12 @@ class GOFALlamaModel(LlamaModel):
         )
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self.g_layers = nn.ModuleList([GOFAGNNConv(gofa_config) for _ in range(gofa_config.num_layers)])
+        if gofa_config.gnn_type == "index":
+            self.g_layers = nn.ModuleList([GOFAGNNConv(gofa_config) for _ in range(gofa_config.num_layers)])
+        elif gofa_config.gnn_type == "full":
+            self.g_layers = nn.ModuleList([GOFAGNNConvFullAtt(gofa_config) for _ in range(gofa_config.num_layers)])
+        else:
+            raise ValueError("Unknown GNN type for GOFA.")
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = False
         self.mem_token = gofa_config.mem_token
@@ -371,11 +376,20 @@ class GOFAMistralModel(MistralModel):
         )
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self.g_layers = nn.ModuleList([GOFAGNNConv(gofa_config) for _ in range(gofa_config.num_layer)])
+        if gofa_config.gnn_type == "index":
+            self.g_layers = nn.ModuleList([GOFAGNNConv(gofa_config) for _ in range(gofa_config.num_layers)])
+        elif gofa_config.gnn_type == "full":
+            self.g_layers = nn.ModuleList([GOFAGNNConvFullAtt(gofa_config) for _ in range(gofa_config.num_layers)])
+        else:
+            raise ValueError("Unknown GNN type for GOFA.")
         self.norm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = False
         self.mem_token = gofa_config.mem_token
         self.llama_dtype = gofa_config.llama_dtype
+        self.n_layers = gofa_config.num_layers
+        self.interleave = gofa_config.interleave
+        if not self.interleave:
+            self.g_layers.append(MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps))
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -485,26 +499,29 @@ class GOFAMistralModel(MistralModel):
         for i, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            g_layer_idx = i - (len(self.layers) - len(self.g_layers))
-            if g_layer_idx >= 0 and not past_key_state and graph is not None:
-                if g_layer_idx == 0 and map_node:
-                    hidden_states = torch.cat(
-                        [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]],
-                        dim=0)
-                    mem_mask = torch.cat(
-                        [mem_mask[:cur_node_size][graph.node_map], mem_mask[cur_node_size:]],
-                        dim=0)
-                    attention_mask = torch.cat([attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
-                    cur_node_size = len(graph.node_map)
-                mem_repr = hidden_states[mem_mask].view(hidden_states.size()[0], self.mem_token, -1)
-                gnn_input = mem_repr[:cur_node_size]
-                gnn_edge_input = mem_repr[cur_node_size:][graph.edge_map]
+            if self.interleave:
+                g_layer_idx = i - (len(self.layers) - self.n_layers)
+                if g_layer_idx >= 0 and not past_key_state and graph is not None:
+                    if g_layer_idx == 0 and map_node:
+                        hidden_states = torch.cat(
+                            [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]],
+                            dim=0)
+                        mem_mask = torch.cat(
+                            [mem_mask[:cur_node_size][graph.node_map], mem_mask[cur_node_size:]],
+                            dim=0)
+                        attention_mask = torch.cat([attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
+                        cur_node_size = len(graph.node_map)
+                    mem_repr = hidden_states[mem_mask].view(hidden_states.size()[0], self.mem_token, -1)
+                    gnn_input = mem_repr[:cur_node_size]
+                    gnn_edge_input = mem_repr[cur_node_size:][graph.edge_map]
 
-                output = self.g_layers[g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input)
-                output = torch.cat([output, mem_repr[cur_node_size:]], dim=0)
-                gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
-                gnn_output[mem_mask] = output.view(-1, output.size()[-1])
-                hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
+                    output = self.g_layers[g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input)
+                    output = torch.cat([output, mem_repr[cur_node_size:]], dim=0)
+                    gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
+                    gnn_output[mem_mask] = output.view(-1, output.size()[-1])
+                    hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
+            else:
+                g_layer_idx = -1
             if g_layer_idx < 0 and partial_grad:
                 with torch.no_grad():
                     hidden_states = hidden_states.to(self.llama_dtype)
@@ -554,9 +571,32 @@ class GOFAMistralModel(MistralModel):
                 if output_attentions:
                     all_self_attns += (layer_outputs[1],)
 
-        hidden_states = self.norm(hidden_states)
 
-        # add hidden states from the last decoder layer
+        if not self.interleave and graph is not None:
+            for g_layer_idx in range(self.n_layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                if g_layer_idx == 0 and map_node:
+                    hidden_states = torch.cat(
+                        [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]], dim=0)
+                    mem_mask = torch.cat([mem_mask[:cur_node_size][graph.node_map], mem_mask[cur_node_size:]], dim=0)
+                    attention_mask = torch.cat(
+                        [attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
+                    cur_node_size = len(graph.node_map)
+                mem_repr = hidden_states[mem_mask].view(hidden_states.size()[0], self.mem_token, -1)
+                gnn_input = mem_repr[:cur_node_size]
+                gnn_edge_input = mem_repr[cur_node_size:][graph.edge_map]
+
+                output = self.g_layers[g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input)
+                output = torch.cat([output, mem_repr[cur_node_size:]], dim=0)
+                gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
+                gnn_output[mem_mask] = output.view(-1, output.size()[-1])
+                hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
+            hidden_states = self.g_layers[-1](hidden_states)
+        else:
+            hidden_states = self.norm(hidden_states)
+
+            # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 

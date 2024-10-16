@@ -399,9 +399,8 @@ class GOFAMistralHelper(torch.nn.Module):
         return memory_embedding
 
     def decode(self, data, mem_embs, graph=None, prompt=None):
-        prompt_output = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=True,
-                                             max_length=self.model.training_args.model_max_length)["input_ids"]
-        prompt_output = [p + [self.model.tokenizer.eos_token_id] for p in prompt_output]
+        prompt_output = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=False)["input_ids"]
+        prompt_output = [p + [self.model.tokenizer.eos_token_id] if len(p) < self.model.training_args.model_max_length else p[:self.model.training_args.model_max_length] for p in prompt_output]
         original_prompt_output = prompt_output
 
         if prompt is None:
@@ -547,11 +546,10 @@ class LlamaHelper(torch.nn.Module):
     def forward(self, data, input, prompt=None):
         # print(self.model.training_args.model_max_length)
         cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
-        prompt_output = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=True,
-                                       max_length=self.model.training_args.model_max_length)["input_ids"]
+        prompt_output = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=False)["input_ids"]
         input_tokens = self.model.tokenizer(input, add_special_tokens=False, padding=False, truncation=True,
                                       max_length=self.model.training_args.model_max_length)["input_ids"]
-        prompt_output = [p + [self.model.tokenizer.eos_token_id] for p in prompt_output]
+        prompt_output = [p + [self.model.tokenizer.eos_token_id] if len(p) < self.model.training_args.model_max_length else p[:self.model.training_args.model_max_length] for p in prompt_output]
         if prompt is None:
             prompt = [""] * len(data)
         prompt_input = self.model.tokenizer(prompt, add_special_tokens=False, padding=False)["input_ids"]

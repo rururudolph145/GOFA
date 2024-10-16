@@ -1,3 +1,4 @@
+import re
 from collections import namedtuple, OrderedDict
 
 import torch
@@ -169,10 +170,24 @@ class GOFA(torch.nn.Module):
     def auto_encode(self, g):
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
+            # edge_attr_list = []
+            # for i, t in enumerate(g.edge_attr):
+            #     edge = g.edge_index[:, i]
+            #     node_text = [g.x[n] for n in edge]
+            #     pattern = r"This is node \[([^\]]+)\]"
+            #     for j, text in enumerate(node_text):
+            #         match = re.search(pattern, text)
+            #         if match:
+            #             node_text[j] = "["+match.group(1)+"]"
+            #         else:
+            #             node_text[j] = "prompt node"
+            #     edge_text = f"This edge connects {node_text[0]} node to {node_text[1]} node. {t}"
+            #     edge_attr_list.append(edge_text)
             text_inputs = np.concatenate([g.x, g.edge_attr], axis=0)
         else:
             text_inputs = g.x
-        llm_output = self.llm_model.encode(text_inputs.tolist(), graph=g, partial_grad=True)
+        text_inputs = text_inputs.tolist()
+        llm_output = self.llm_model.encode(text_inputs, graph=g, partial_grad=True)
         g.x = llm_output[:g.node_map.size(-1)]
         return g
 
