@@ -41,3 +41,4 @@ class GOFAMistralConfig(MistralConfig):
         self.interleave = interleave
         self.gating = gating
         self.mp_att = mp_att
+        self.trainable_layer = 3

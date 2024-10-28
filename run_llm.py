@@ -47,39 +47,63 @@ def main(params):
         num_layers=params.num_layers)
     model_args.dec_lora = params.dec_lora
     training_args.model_max_length = params.llm_max_length
+    if params.mode.endswith("gen"):
+        params.last_save = False
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
         gofa_args.llama_dtype = torch.bfloat16
     gofa_args.gnn_mlp_type = params.mlp_type
 
+    def data_size_filter(data: TAGData, **kwargs):
+        estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
+            torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
+        if len(data.node_map) + len(torch.unique(data.edge_map)) < 40 and estimated_mem < 65:
+            return data
+        else:
+            return None
 
     if params.run_mode == "pretrain":
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
 
-        train_task = GOFAPretrainTaskWrapper(["mag240m", "ultrachat200k", "wiki_graph", "wikikg90m"],
-                                             root=params.data_root_path, save_name=f"pretrain_{params.last_epochs}", fast_data_load=True, single_node_cs=True)
-        # train_task = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-        #                                     split="train", save_suffixs=["llm_arxiv_train"], add_prompt_graph=False, left_keep_length=128)
-        val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="val", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
-        test_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="test", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
+        task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node",
+                      "pubmed_node", "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m",
+                      "ultrachat200k"][3:4]
 
-        # breakpoint()
+        save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_",
+                      "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_",
+                      "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+                      "pretrain_"][3:4]
+
+        filter_func = data_size_filter
+        save_names = [name + str(params.last_epochs + 1) for name in save_names]
+        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names,
+                                             fast_data_load=True, filter_func=filter_func)
+        val_tasks = train_task
+        test_tasks = train_task
+
+        # val_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="val", sample_size=100,
+        #                                     save_name="pretrain_val", pretrain_tasks=["CS", "CN", "SP"],
+        #                                     num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
+        #                                     num_CN=3)
+        #
+        # test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="test", sample_size=100,
+        #                                      save_name="pretrain_test", pretrain_tasks=["CS", "CN", "SP"],
+        #                                      num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
+        #                                      num_CN=3)
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
 
-        val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name="val", metric="perp", classes=32132,
-                                meta_data={"eval_func": sentence_perplexity})]
+        val_tasks = [
+            DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size, state_name="val",
+                         metric="perp", classes=32132, meta_data={"eval_func": sentence_perplexity})]
 
         test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                 state_name="test", metric="perp", classes=32132,
-                                 meta_data={"eval_func": sentence_perplexity})]
+                                   state_name="test", metric="perp", classes=32132,
+                                   meta_data={"eval_func": sentence_perplexity})]
         evlter = []
 
 
@@ -91,19 +115,13 @@ def main(params):
             ######################################################################################################
             #                                          FINETUNE Task                                             #
             ######################################################################################################
-            def data_size_filter(data: TAGData, **kwargs):
-                estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
-                    torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
-                if len(data.node_map)+len(torch.unique(data.edge_map)) < 42 and estimated_mem < 73:
-                    return data
-                else:
-                    return None
+            filter_func = data_size_filter
+
         else:
             ######################################################################################################
             #                                          Inference                                                 #
             ######################################################################################################
-            def data_size_filter(data: TAGData, **kwargs):
-                return data
+            filter_func = lambda x: x
 
 
 
@@ -113,13 +131,14 @@ def main(params):
                                             hop=params.hops,
                                             max_nodes_per_hop=params.train_max_nodes_per_hops,
                                             sample_size=params.sample_size_per_task,
-                                            post_funcs=data_size_filter,
+                                            filter_func=filter_func,
                                             way=params.ways,
                                             num_workers=params.num_workers,
                                             instruction=params.instructs,
                                             selection=params.selections,
                                             add_prompt_graph=False,
-                                            save_data=True)
+                                            save_data=True,
+                                            from_saved=True,)
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 
@@ -133,26 +152,27 @@ def main(params):
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            num_workers=params.num_workers,
-                                            way=way,
-                                            instruction=instruct,
+                                            num_workers=params.num_workers, filter_func=filter_func,
+                                             way=way,
+                                            instruction=instruct, sample_size=inf_size,
                                             selection=selection,
-                                            add_prompt_graph=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            add_prompt_graph=False, save_data=True, from_saved=True ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         test_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
                                             split="test",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            num_workers=params.num_workers,
+                                            num_workers=params.num_workers, filter_func=filter_func,
                                             way=way,
+                                            sample_size=inf_size,
                                             instruction=instruct,
                                             selection=selection,
-                                            add_prompt_graph=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            add_prompt_graph=False, save_data=True, from_saved=True ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
@@ -230,18 +250,21 @@ def main(params):
 
     strategy = "deepspeed_stage_2" if torch.cuda.device_count() > 1 else "auto"
     if params.run_mode == "inf":
-        val_res, test_res = lightning_test(wandb_logger, pred_model, params.datamodule, metrics, params.load_dir,
-                                           strategy=strategy)
+        val_res, test_res = lightning_test(wandb_logger, pred_model, params.datamodule, metrics, strategy=strategy)
     else:
-        val_res, test_res = lightning_fit(wandb_logger, pred_model, params.datamodule, metrics, params.num_epochs+params.last_epochs,
-                                          strategy=strategy, save_model=params.save_model["save"], load_best=False,
-                                          reload_freq=1, test_rep=params.test_rep, val_interval=params.val_interval,
+        val_res, test_res = lightning_fit(wandb_logger, pred_model, params.datamodule, metrics,
+                                          params.num_epochs + params.last_epochs, strategy=strategy,
+                                          save_model=params.save_model["save"], load_best=False, reload_freq=1,
+                                          test_rep=params.test_rep, val_interval=params.val_interval,
                                           grad_clipping=params.grad_clip, grad_acc_step=params.grad_acc_step,
                                           save_time=timedelta(hours=params.save_model["time"]), cktp_prefix="best_ckpt",
-                                          precision=params.training_precision, top_k=params.save_model["top_k"], ckpt_path=params.ckpt_path, save_last=params.save_model["last"])
+                                          precision=params.training_precision, top_k=params.save_model["top_k"],
+                                          ckpt_path=params.ckpt_path, save_last=params.save_model["last"],
+                                          ckpt_save_path=params.ckpt_save_path)
+
     if params.last_save:
-        # model.save_partial(os.path.join(params.exp_dir, "best_ckpt.pth"))
-        torch.save(model.state_dict(), os.path.join(params.exp_dir, "best_ckpt.pth"))
+        model.save_partial(os.path.join(params.exp_dir, "best_ckpt.pth"))
+        # torch.save(model.state_dict(), os.path.join(params.exp_dir, "best_ckpt.pth"))
     # if os.path.exists(checkpoint_dir):
     #     shutil.rmtree(checkpoint_dir)
 
@@ -255,7 +278,7 @@ if __name__ == "__main__":
 
     params = parser.parse_args()
     configs = []
-    configs.append(load_yaml(os.path.join(os.path.dirname(__file__), "configs", "llama_config.yaml")))
+    configs.append(load_yaml(os.path.join(os.path.dirname(__file__), "configs", "default_config.yaml")))
 
     if params.override is not None:
         override_config = load_yaml(params.override)

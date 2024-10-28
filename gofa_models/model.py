@@ -3,11 +3,12 @@ from collections import namedtuple, OrderedDict
 
 import torch
 import numpy as np
+from copy import deepcopy
 
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.layer.pyg import RGCNEdgeConv
 from gp.nn.layer.pyg import TransformerConv as MConv
-from .helper import GOFALlamaHelper, GOFAMistralHelper, LlamaHelper
+from .helper import GOFALlamaHelper, GOFAMistralHelper, LlamaHelper, MPLMHelper
 
 LLM_DIM_DICT = {"ST": 768, "BERT": 768, "e5": 1024, "llama2_7b": 4096, "llama2_13b": 5120, "mamba": 768, "icae": 4096,
                 "icae_mem": 4096}
@@ -39,6 +40,146 @@ def print_text_side_by_side(text_1, text_2, line_width=120, space=10):
         print(full_text)
 
 
+intermedia_prompt = """
+---Role---
+
+You are a helpful assistant synthesize and reason about data in the graph provided.
+
+---Goal---
+
+You will be given an input of a <center_node> in the graph, the <center_node>'s <neighbor_node> and their <relation> to the <center_node>.
+You need to keep the information of the <center_node> and summarize the information in the <neighbor_node> with their <relation> to the <center_node>.
+
+--- Example ---
+<graph>
+<neighbor_node><node_text>Apple</node_text><relation> a subclass of</relation></neighbor_node>
+<neighbor_node><node_text>Food</node_text><relation> a superclass of</relation></neighbor_node>
+<center_node><node_text>Fruit</node_text></center_node>
+</graph>
+
+"Fruit. From neighbor information, fruit is a superclass of apple but is a subclass of food."
+
+--- Goal ---
+
+Do not answer <prompt_text> in the <neighbor_node>, only summarize neighbor information related to that <prompt_text> with few words.
+
+--- Example ---
+<graph>
+<neighbor_node><node_text>Peperoni. Peperoni is on top of the pizza</node_text><relation> to the right of </relation></neighbor_node>
+<neighbor_node><node_text>Pineapple. Pineapple is next to the apple</node_text><relation> to the left of</relation></neighbor_node>
+<neighbor_node><prompt_text>Is the pizza next to the lime?</prompt_text><relation> connects a prompt node to a center node</relation></neighbor_node>
+<center_node><node_text>Fork</node_text></center_node>
+</graph>
+
+"Fork. Peperoni is to the right of the Fork. Peperoni is on top of the pizza"
+
+--- Goal ---
+
+If the <prompt_text> in <neighbor_node> is unrelated, ignore the <prompt_text>, only summarize <neighbor_node> with few words.
+
+--- Example ---
+<graph>
+<neighbor_node><node_text>White ceiling is dripping water.</node_text><relation> the cause of  </relation></neighbor_node>
+<neighbor_node><prompt_text>Is there cat in the image?</prompt_text><relation> connects prompt node to center node</relation></neighbor_node>
+<center_node><node_text>Water pot on the ground</node_text></center_node>
+</graph>
+
+"Water pot on the ground. Dripping ceiling is the cause of water pot."
+
+Do not make guesses, if something is not mentioned, do not say anything about it, only summarize what's in the graph, do not explain. Be succinct, straight-forward, decisive in your response.
+
+--- Input ---
+
+"""
+
+final_prompt = """
+---Role---
+
+You are a helpful assistant directly answer questions on <center_node> based on the data in the graph provided.
+
+---Goal---
+
+You will be given an input of a <center_node> in the graph, the <center_node>'s <neighbor_node> and their <relation> to the <center_node>.
+You need to summarize the information in the <neighbor_node> with their <relation> to the <center_node>.
+Answer the question on the <center_node> with <prompt_text> directly and succinctly with few words with explanation.
+
+--- Example ---
+
+<graph>
+<neighbor_node><node_text>White cat is big.</node_text><relation> connects to a prompt node</relation></neighbor_node>
+<neighbor_node><node_text>Evans is larger than the white cat</node_text><relation> connects to a prompt node</relation></neighbor_node>
+<center_node><prompt_text>Is Evans big?</prompt_text></center_node>
+</graph>
+
+"Yes, Evans is big."
+
+--- Goal ---
+
+Summarize summarize neighbor information related to that <prompt_text> with few words.
+
+--- Example ---
+<graph>
+<neighbor_node><node_text>Peperoni. Peperoni is on top of the pizza</node_text><relation> to the right of </relation></neighbor_node>
+<neighbor_node><node_text>Pineapple. Pineapple is next to the apple</node_text><relation> to the left of</relation></neighbor_node>
+<neighbor_node><prompt_text>Is the pizza next to the lime?</prompt_text><relation> connects a prompt node to a center node</relation></neighbor_node>
+<center_node><node_text>Fork</node_text></center_node>
+</graph>
+
+"Fork. Peperoni is to the right of the Fork. Peperoni is on top of the pizza"
+
+--- Goal ---
+Always give direct answer. The graph contains all information you need to answer correctly.
+
+--- Example ---
+<graph>
+<neighbor_node><node_text>Peperoni is on top of the pizza</node_text><relation> connects to a prompt node</relation></neighbor_node>
+<neighbor_node><node_text>The pizza is underneath the peperoni</node_text><relation> connects to a prompt node</relation></neighbor_node>
+<center_node><prompt_text>How many types of food are there?</prompt_text></center_node>
+</graph>
+
+"There are two types of foods."
+
+Answer the <prompt_text> with explanation. Be succinct, definitive and straight-forward in your answer with just few words. The information is enough.
+
+--- Input ---
+
+"""
+
+finish_prompt = """
+
+Based on your role, goal, and input, give a response with just few words:
+
+"""
+
+def gen_node_prompts(node_text, edge_text, edge_index, prompt_node_id=None, final_layer=False):
+    input_node_text = []
+    if prompt_node_id is not None:
+        node_idx_tag = [("<prompt_text>", "</prompt_text>") if i in prompt_node_id else ("<node_text>", "</node_text>") for i in range(len(node_text))]
+    else:
+        node_idx_tag = [("<node_text>", "</node_text>") for i in range(len(node_text))]
+    for i in range(len(node_text)):
+        source_nodes = edge_index[:, edge_index[1] == i]
+        node_prompt = ""
+        node_prompt = node_prompt + (final_prompt if i in prompt_node_id else intermedia_prompt) + "<graph>\n"
+        for source_node_id, _, eid in source_nodes.T:
+            node_prompt += "<neighbor_node>" + node_idx_tag[source_node_id][0] + node_text[source_node_id] + node_idx_tag[source_node_id][1]+"<relation>" + \
+                           edge_text[eid] + "</relation></neighbor_node>\n"
+        node_prompt += "<center_node>" + node_idx_tag[i][0] + node_text[i] + node_idx_tag[i][0] + "</center_node>\n</graph>\n" + finish_prompt
+        input_node_text.append(node_prompt)
+    return input_node_text
+
+def gen_summarize_response(questions, responses):
+    input_node_text = [""] * len(responses[0])
+    for i, q in enumerate(questions):
+        input_node_text[i] += "You provided " + str(len(responses)) + " rounds of responses:\n\n"
+    for i, rounds in enumerate(responses):
+        for j, res in enumerate(rounds):
+            input_node_text[j] += "Your response in round " + str(i+1) + " is:" + res + "\n\n"
+    for i in range(len(input_node_text)):
+        input_node_text[i] += "\n What is the most reasonable response? Answer definitively, use few words or one sentence. You must draw the conlucsion and decisive. The response contains enough information to question."
+        print(input_node_text[i])
+    return input_node_text
+
 
 class GOFA(torch.nn.Module):
     def __init__(self, transformer_args, mode="autoencoder", base_llm="llama7b", save_dir=""):
@@ -51,8 +192,10 @@ class GOFA(torch.nn.Module):
             self.llm_model = GOFALlamaHelper(transformer_args)
         elif base_llm == 'mistral7b':
             self.llm_model = GOFAMistralHelper(transformer_args)
-        elif base_llm == 'llama7blora' or 'mistral7blora':
+        elif base_llm == 'llama7blora' or base_llm == 'mistral7blora':
             self.llm_model = LlamaHelper(transformer_args)
+        elif base_llm == 'mistral7bmplm':
+            self.llm_model = MPLMHelper(transformer_args)
         else:
             raise NotImplementedError(base_llm + " is not supported. Please choose from: llama7b, mistral7b,")
 
@@ -77,9 +220,100 @@ class GOFA(torch.nn.Module):
         elif mode == "nographgentemp":
             self.encode = self.llm_gen_scene_graph
             self.decode = lambda x: x
+        elif mode == "ttc":
+            self.encode = self.tt_gen
+            self.decode = lambda x: x
+        elif mode == "mplm":
+            self.encode = self.mplm_decode
+            self.decode = lambda x: x
+        elif mode == "mplmgen":
+            self.encode = self.mplm_gen
+            self.decode = lambda x: x
         else:
             # TODO: not implemented
             raise NotImplementedError(mode + " mode not implemented")
+
+    def tt_gen(self, g):
+        g.num_node_feat = g.x.shape[0]
+        node_text = g.x[g.node_map.cpu().numpy()]
+        edge_text = g.edge_attr[g.edge_map.cpu().numpy()]
+        edge_index = g.edge_index
+        edge_index = torch.cat([edge_index.cpu(), torch.arange(len(edge_index[0])).view(1, -1)], dim=0)
+        prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        q_idx = g.question_index.cpu().numpy()
+        q_idx_dict = set(q_idx)
+        intermediate_response = []
+        for i in range(1):
+            for j, txt in enumerate(prompt_texts):
+                node_text[q_idx[j]] = txt
+            input_node_text = gen_node_prompts(node_text, edge_text, edge_index, q_idx_dict, i==1)
+            generated_text = self.llm_model.generate(input_node_text)
+            intermediate_response.append([generated_text[v] for v in q_idx])
+            node_text = generated_text
+            for s in node_text:
+                print("-"*120)
+                print(s)
+        final_question = gen_summarize_response(prompt_texts, intermediate_response)
+        final_response = self.llm_model.generate(final_question)
+        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
+        for i, txt in enumerate(answer_texts):
+            print_fixed_length(f"question: {prompt_texts[i]}")
+            print("-" * 120)
+            print_text_side_by_side("target: " + txt, "gen: " + final_response[i])
+            print("=" * 120)
+        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
+        return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text[:len(answer_texts)], answer_id=torch.tensor([1]),
+                           answer=answer_texts)
+
+    def mplm_decode(self, g):
+        g.num_node_feat = g.x.shape[0]
+        if g.edge_attr is not None:
+            node_text = g.x[g.node_map.cpu().numpy()]
+            text_inputs = np.concatenate([node_text, g.edge_attr], axis=0)
+            g.node_map = torch.arange(len(node_text), device=g.node_map.device)
+            g.num_node_feat = len(node_text)
+        else:
+            text_inputs = g.x
+        text_inputs = text_inputs.tolist()
+        true_text_inputs = deepcopy(text_inputs)
+        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
+        prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        for i, t in enumerate(answer_texts):
+            if prompt_texts[i].startswith("Please complete the sentence of the node") or prompt_texts[i]=="":
+                true_text_inputs[g.question_index[i]] = true_text_inputs[g.question_index[i]] + t
+            else:
+                true_text_inputs[g.question_index[i]] = "Question: " + true_text_inputs[g.question_index[i]] + " Answer:" + t
+                text_inputs[g.question_index[i]] = "Question: " + text_inputs[g.question_index[i]] + " Answer:"
+        answer_logits, answer_id, masks = self.llm_model(true_text_inputs, masked_data=text_inputs, graph=g)
+        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
+        res_answer = self.logit_to_text(answer_logits, masks)
+        return GNNLMOutput(logits=answer_logits[masks], pred_text=[res_answer[q] for q in g.question_index],
+                           answer_id=answer_id[masks], answer=answer_texts)
+
+    def mplm_gen(self, g):
+        g.num_node_feat = g.x.shape[0]
+        if g.edge_attr is not None:
+            node_text = g.x[g.node_map.cpu().numpy()]
+            text_inputs = np.concatenate([node_text, g.edge_attr], axis=0)
+            g.node_map = torch.arange(len(node_text), device=g.node_map.device)
+            g.num_node_feat = len(node_text)
+        else:
+            text_inputs = g.x
+        text_inputs = text_inputs.tolist()
+        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
+        prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        for i, q in enumerate(g.question_index):
+            if not (prompt_texts[i].startswith("Please complete the sentence of the node") or prompt_texts[i]==""):
+                text_inputs[q] = "Question: " + text_inputs[q] + " Answer:"
+        generated_text = self.llm_model.generate(text_inputs, graph=g, target_index=g.question_index)
+        for i, txt in enumerate(generated_text):
+            print_fixed_length("question: " + prompt_texts[i])
+            print("-" * 120)
+            print_text_side_by_side("target: " + answer_texts[i], "gen: " + generated_text[i])
+            print("=" * 120)
+        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
+        return GNNLMOutput(logits=torch.randn([1, 32132]).to(g.edge_index.device), pred_text=generated_text,
+                           answer_id=torch.tensor([1]).to(g.edge_index.device), answer=answer_texts)
 
     def llm_decode(self, g):
         text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
@@ -195,9 +429,9 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_texts = ["" if p.startswith("Please complete the sentence of the node") else p for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "Follow the prompt in the prompt node." for p in prompt_texts]
         emb = emb[g.question_index]
-        answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_texts)
+        answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_input_texts)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
         return GNNLMOutput(logits=answer_logits[masks][:, :32000], pred_text=self.logit_to_text(answer_logits, masks),
                            answer_id=answer_id, answer=answer_texts)
@@ -206,9 +440,9 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_texts = ["" if p.startswith("Please complete the sentence of the node") else p for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "Follow the prompt in the prompt node." for p in prompt_texts]
         emb = emb[g.question_index]
-        generated_text = self.llm_model.generate(emb, prompt=prompt_texts)
+        generated_text = self.llm_model.generate(emb, prompt=prompt_input_texts)
         for i, txt in enumerate(generated_text):
             print_fixed_length("question: " + prompt_texts[i])
             print("-"*120)
@@ -234,7 +468,10 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id, answer=answer_texts)
 
     def save_partial(self, save_dir):
-        state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
+        try:
+            state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
+        except AttributeError as e:
+            state_dict = OrderedDict()
         full_state_dict = self.state_dict()
         for k in full_state_dict:
             if "default" in k:
@@ -255,7 +492,10 @@ class GOFA(torch.nn.Module):
                 new_state_dict[name.replace("decadapt", "default")] = state_dict[name]
             else:
                 new_state_dict[name] = state_dict[name]
-        self.llm_model.model.icae.model.model.g_layers.load_state_dict(new_state_dict, strict=False)
+        try:
+            self.llm_model.model.icae.model.model.g_layers.load_state_dict(new_state_dict, strict=False)
+        except AttributeError:
+            pass
         self.load_state_dict(new_state_dict, strict=False)
 
     def logit_to_text(self, logits, masks):

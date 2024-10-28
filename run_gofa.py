@@ -71,11 +71,11 @@ def main(params):
         #                                          Pretrain Task                                             #
         ######################################################################################################
         task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
-                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
+                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"][3:4]
 
         save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
                       "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
-                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"]
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"][3:4]
 
         filter_func = data_size_filter
         save_names = [name + str(params.last_epochs + 1) for name in save_names]
@@ -153,7 +153,7 @@ def main(params):
 
         test_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
-                                            split="test",
+                                            split="train",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             sample_size=inf_sample_size,

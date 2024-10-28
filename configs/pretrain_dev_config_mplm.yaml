@@ -1,6 +1,6 @@
 root_path: "./"
 data_root_path: "/project/tantra/feng.jiarui/dataset_dev/TAGDataset"
-load_dir:
+load_dir: "./saved_exp/2024-10-24_20:07:56.332153_480/mem_ckpt.pth"
 ckpt_path:
 ckpt_save_path: "/storage2/fs1/yixin.chen/Active/jerry.kong/gofa_saved_exp"
 last_epochs: 0
@@ -8,12 +8,14 @@ num_epochs: 1
 grad_acc_step: 64
 mlp_type: llama
 gnn_type: combine
-num_layers: 1
-l2: 0.1
-lr: 0.0003
+num_layers: 3
+llm_max_length: 256
+l2: 0.0
+lr: 0.001
 gating: False
 interleave: True
-mode: "autoencoder"
+mode: mplm
+base_llm: "mistral7bmplm"
 load_model: False
 dec_lora: False
 save_model:

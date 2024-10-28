@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from modules.gofa_icae_llama_modeling import LlamaICAE
 from modules.gofa_icae_mistral_modeling import MistralICAE
-from modules.llama_modeling import LlamaLora
+from modules.llama_modeling import LlamaLora, MPLMLora
 from collections import OrderedDict
 from safetensors.torch import load_file
 
@@ -586,7 +586,7 @@ class LlamaHelper(torch.nn.Module):
         cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
         if prompt is None:
             prompt = [""] * len(input)
-        prompt_ids = self.model.tokenizer(input, add_special_tokens=False, padding=False, truncation=True,
+        prompt_ids = self.model.left_tokenizer(input, add_special_tokens=False, padding=False, truncation=True,
                                       max_length=self.model.training_args.model_max_length)["input_ids"]
 
         att_mask = [[True] * (len(a)) for a in prompt_ids]
@@ -598,13 +598,16 @@ class LlamaHelper(torch.nn.Module):
         att_mask = input_prompt_ids["attention_mask"].to(device=cur_device)
 
         prompt_answer_ids = prompt_ids.to(device=cur_device, dtype=torch.long)
+        #
+        # generated_text = [self.model.tokenizer.decode(output, skip_special_tokens=True) for i, output in enumerate(prompt_ids)]
+        # for s in generated_text:
+        #     print("-")
+        #     print(s)
 
         with torch.no_grad():
-            outputs = self.model.icae.generate(prompt_answer_ids, max_length=2048, num_return_sequences=1, pad_token_id = self.model.eos_id)
-
-        generated_text = [self.model.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
-        generated_text = [self.extract_content_after_inst(t) for t in generated_text]
-
+            outputs = self.model.icae.generate(input_ids=prompt_answer_ids, max_length=2548, num_return_sequences=1, pad_token_id = self.model.eos_id, attention_mask=att_mask)
+        generated_text = [self.model.tokenizer.decode(output[len(prompt_answer_ids[i]):], skip_special_tokens=True) for i, output in enumerate(outputs)]
+        # generated_text = ["---Output---".join(t.split("---Output---")[1:]) for i, t in enumerate(generated_text)]
         return generated_text
 
     def extract_content_after_inst(self, generated_text):
@@ -622,3 +625,302 @@ class LlamaHelper(torch.nn.Module):
         return content_after_inst
 
 
+def mplm_4d_causal(max_size, all_size, center_size):
+    causal_mask = torch.zeros((max_size, all_size - center_size), dtype=torch.float32)
+    mask = torch.full((max_size, max_size), torch.finfo(torch.float32).min)
+    mask_cond = torch.arange(mask.size(-1))
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+
+    return torch.cat([causal_mask, mask[:, : center_size]], dim=-1)
+
+def mplm_4d_causal_inverse(max_size, all_size, center_size):
+    causal_mask = torch.zeros((max_size, all_size - center_size), dtype=torch.float32)
+    mask = torch.full((max_size, max_size), torch.finfo(torch.float32).min)
+    mask_cond = torch.arange(mask.size(-1))
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    return torch.cat([causal_mask, mask[:, max_size-center_size: ]], dim=-1)
+
+class MPLMHelper(torch.nn.Module):
+    def __init__(self, transformer_args):
+        super().__init__()
+        model_args, training_args, gofa_args = transformer_args
+        model = MPLMLora(model_args, training_args, gofa_args)  # restored llama2-7b-chat model
+
+        self.model = model
+        self.model.tokenizer.pad_token = self.model.tokenizer.eos_token
+        self.model.left_tokenizer.pad_token = self.model.left_tokenizer.bos_token
+
+    def get_tokenizer(self):
+        return self.model.tokenizer
+
+    def train_mode(self):
+        # for param in self.model.dec.parameters():
+        #     param.requires_grad = False
+        pass
+
+    def forward(self, data, masked_data=None, graph=None):
+        # print(self.model.training_args.model_max_length)
+        if masked_data == None:
+            masked_data = data
+        cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
+        prompt_output_full = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=False)["input_ids"]
+        prompt_output_masked = self.model.tokenizer(masked_data, add_special_tokens=False, padding=False, truncation=False)["input_ids"]
+        prompt_output_masked = [p + [self.model.tokenizer.eos_token_id] if len(p) == len(prompt_output_full[i]) else p for i, p in enumerate(prompt_output_masked)]
+        prompt_output_full = [p + [self.model.tokenizer.eos_token_id] for p in prompt_output_full]
+        prompt_output_ids_full = []
+        prompt_mask = []
+        prompt_masked_mask = []
+        for i, p in enumerate(prompt_output_full):
+            if len(p) < self.model.training_args.model_max_length:
+                prompt_output_id = p
+                prompt_masked_mask_loc = len(prompt_output_masked[i])
+            elif self.model.training_args.model_max_length/2 < len(prompt_output_masked[i]) != len(p):
+                extra = len(p) - self.model.training_args.model_max_length
+                offset = min(extra, int(len(prompt_output_masked[i])-self.model.training_args.model_max_length/2))
+                prompt_output_id = p[offset: offset + self.model.training_args.model_max_length]
+                prompt_masked_mask_loc = len(prompt_output_masked[i]) - offset
+            else:
+                prompt_output_id = p[:self.model.training_args.model_max_length]
+                prompt_masked_mask_loc = min(len(prompt_output_masked[i]), self.model.training_args.model_max_length)
+            prompt_output_ids_full.append(prompt_output_id)
+            prompt_mask.append([True] * len(prompt_output_id))
+            prompt_masked_mask.append(([True] * prompt_masked_mask_loc + [False] * (len(prompt_output_id) - prompt_masked_mask_loc)))
+
+        prompt_output = self.model.tokenizer.pad({"input_ids":prompt_output_ids_full, "attention_mask": prompt_mask}, padding=True, return_tensors="pt")
+
+        output_masked = self.model.tokenizer.pad({"input_ids":prompt_output_ids_full, "attention_mask": prompt_masked_mask}, padding=True, return_tensors="pt")
+
+        mapped_node_feature = output_masked["attention_mask"][:graph.num_node_feat][graph.node_map.cpu()]
+        mapped_edge_feature = output_masked["attention_mask"][graph.num_node_feat:]
+        mapped_feature = torch.cat([mapped_node_feature, mapped_edge_feature], dim=0)
+
+        mapped_node_feature_full = prompt_output["attention_mask"][:graph.num_node_feat][graph.node_map.cpu()]
+        mapped_edge_feature_full = prompt_output["attention_mask"][graph.num_node_feat:]
+        mapped_feature_full = torch.cat([mapped_node_feature_full, mapped_edge_feature_full], dim=0)
+
+        mapped_ids = prompt_output["input_ids"][:graph.num_node_feat][graph.node_map.cpu()]
+        cont_ids = torch.cat([mapped_ids, prompt_output["input_ids"][graph.num_node_feat:]], dim=0)
+
+        max_seq_length = mapped_feature.size()[-1]
+
+        pseudo_edge_index = torch.stack([graph.edge_index[0], graph.edge_map+len(graph.node_map), graph.edge_index[1]], dim=0).cpu()
+
+        max_token = 0
+
+        row_extracts = []
+        col_extracts = []
+        mask_extracts = []
+        causal_masks = []
+
+        for i in range(len(graph.node_map)):
+            neighbor_node_and_edge = pseudo_edge_index[:2, pseudo_edge_index[2]==i].T.reshape(-1)
+            mp_node_mask = mapped_feature[neighbor_node_and_edge]
+            center_mask = mapped_feature_full[i:i+1]
+            all_mask = torch.cat([mp_node_mask, center_mask], dim=0)
+            neighbor_node_and_edge = torch.cat([neighbor_node_and_edge, torch.tensor([i])])
+            individual_sizes = all_mask.sum(dim=-1)
+            all_sizes = all_mask.sum()
+            center_size = center_mask.sum()
+            mask_extracts.append(all_sizes)
+            max_token = max(max_token, all_sizes)
+            row_extract = neighbor_node_and_edge.view(-1).repeat_interleave(individual_sizes)
+            col_extract = all_mask.nonzero()[:, 1]
+            row_extracts.append(row_extract)
+            col_extracts.append(col_extract)
+            causal_masks.append(mplm_4d_causal(max_seq_length, all_sizes, center_size))
+
+        for i in range(len(graph.node_map), len(mapped_feature)):
+            center_mask = mapped_feature_full[i:i + 1]
+            center_size = center_mask.sum()
+            row_extract = torch.zeros((center_size,), dtype=torch.long) + i
+            col_extract = torch.arange(center_size)
+            row_extracts.append(row_extract)
+            col_extracts.append(col_extract)
+            mask_extracts.append(center_size)
+            causal_masks.append(mplm_4d_causal(max_seq_length, center_size, center_size))
+
+        for i in range(len(row_extracts)):
+            row_extract = torch.zeros((max_token,), dtype=torch.long)
+            row_extract[:len(row_extracts[i])] = row_extracts[i]
+            row_extracts[i] = row_extract
+            col_extract = torch.zeros((max_token,), dtype=torch.long)
+            col_extract[:len(col_extracts[i])] = col_extracts[i]
+            col_extracts[i] = col_extract
+            mask_extract = torch.zeros((max_token,), dtype=torch.bool)
+            mask_extract[:mask_extracts[i]] = 1
+            mask_extracts[i] = mask_extract
+            causal_mask = torch.full((max_seq_length, max_token), torch.finfo(torch.float32).min)
+            causal_mask[:, :causal_masks[i].size()[1]] = causal_masks[i]
+            causal_masks[i] = causal_mask
+
+        col_extracts = torch.stack(col_extracts)
+        row_extracts = torch.stack(row_extracts)
+        causal_masks = torch.stack(causal_masks)
+
+        prompt_answer_ids = prompt_output["input_ids"].to(cur_device)
+
+        prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(prompt_answer_ids)
+
+        output_emb = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, partial_grad=True, map_node=True, extracts=(row_extracts.to(cur_device), col_extracts.to(cur_device)), extract_attention_mask=causal_masks.to(cur_device), use_cache=False).logits
+
+        final_mask = torch.logical_xor(mapped_feature, mapped_feature_full)
+        return output_emb[:len(mapped_ids), :-1], mapped_ids[:, 1:].to(cur_device), final_mask[:len(mapped_ids), 1:].to(torch.bool)
+
+    def encode(self, data, input, prompt=None):
+        raise NotImplementedError("no encdoe for llama")
+
+
+    def decode(self, data, input, prompt=None):
+        return self(data, input, prompt)
+
+    def generate(self, data, graph=None, target_index=None):
+        # data = ["My name is jason derulo", "What is your name? Answer: ", "Question:"]
+        # target_index = torch.tensor([1])
+        # node_map = torch.tensor([0, 1])
+        # edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+        # edge_map = torch.tensor([0], dtype=torch.long)
+        # graph.edge_index = edge_index.to("cuda")
+        # graph.edge_map = edge_map.to("cuda")
+        # graph.node_map = node_map.to("cuda")
+        # graph.num_node_feat = 2
+        target_index = target_index.to("cpu")
+        target_set = set(target_index.numpy())
+        cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
+        prompt_output_full = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=False)[
+            "input_ids"]
+        prompt_output_ids_full = [
+            p + [self.model.tokenizer.eos_token_id] if (len(p) < self.model.training_args.model_max_length and i not in target_set) else p[
+                                                                                                               :self.model.training_args.model_max_length]
+            for i, p in enumerate(prompt_output_full)]
+        prompt_mask = [[True] * len(p) for p in prompt_output_ids_full]
+
+        prompt_output = self.model.left_tokenizer.pad({"input_ids": prompt_output_ids_full, "attention_mask": prompt_mask},
+                                                 padding=True, return_tensors="pt")
+
+        mapped_node_feature = prompt_output["attention_mask"][:graph.num_node_feat][graph.node_map.cpu()]
+        mapped_edge_feature = prompt_output["attention_mask"][graph.num_node_feat:]
+        mapped_feature = torch.cat([mapped_node_feature, mapped_edge_feature], dim=0)
+
+        max_seq_length = mapped_feature.size()[-1]
+
+        pseudo_edge_index = torch.stack([graph.edge_index[0], graph.edge_map+len(graph.node_map), graph.edge_index[1]], dim=0).cpu()
+
+        max_token = 0
+
+        row_extracts = []
+        col_extracts = []
+        mask_extracts = []
+        causal_masks = []
+
+        for i in range(len(graph.node_map)):
+            neighbor_node_and_edge = pseudo_edge_index[:2, pseudo_edge_index[2] == i].T.reshape(-1)
+            mp_node_mask = mapped_feature[neighbor_node_and_edge]
+            center_mask = mapped_feature[i:i + 1]
+            all_mask = torch.cat([mp_node_mask, center_mask], dim=0)
+            neighbor_node_and_edge = torch.cat([neighbor_node_and_edge, torch.tensor([i])])
+            individual_sizes = all_mask.sum(dim=-1)
+            all_sizes = all_mask.sum()
+            center_size = center_mask.sum()
+            mask_extracts.append(all_sizes)
+            max_token = max(max_token, all_sizes)
+            row_extract = neighbor_node_and_edge.view(-1).repeat_interleave(individual_sizes)
+            col_extract = all_mask.nonzero()[:, 1]
+            row_extracts.append(row_extract)
+            col_extracts.append(col_extract)
+            causal_masks.append(mplm_4d_causal_inverse(max_seq_length, all_sizes, center_size))
+
+        for i in range(len(graph.node_map), len(mapped_feature)):
+            center_mask = mapped_feature[i:i + 1]
+            center_size = center_mask.sum()
+            max_token = max(center_size, max_token)
+            row_extract = torch.zeros((center_size,), dtype=torch.long) + i
+            col_extract = torch.arange(max_seq_length - center_size, max_seq_length)
+            row_extracts.append(row_extract)
+            col_extracts.append(col_extract)
+            mask_extracts.append(center_size)
+            causal_masks.append(mplm_4d_causal_inverse(max_seq_length, center_size, center_size))
+        for i in range(len(row_extracts)):
+            row_extract = torch.zeros((max_token,), dtype=torch.long)
+            row_extract[max_token - len(row_extracts[i]):] = row_extracts[i]
+            row_extracts[i] = row_extract
+            col_extract = torch.zeros((max_token,), dtype=torch.long)
+            col_extract[max_token - len(col_extracts[i]):] = col_extracts[i]
+            col_extracts[i] = col_extract
+            mask_extract = torch.zeros((max_token,), dtype=torch.bool)
+            mask_extract[max_token - mask_extracts[i]:] = 1
+            mask_extracts[i] = mask_extract
+            causal_mask = torch.full((max_seq_length, max_token), torch.finfo(torch.float32).min)
+            causal_mask[:, max_token - causal_masks[i].size()[1]:] = causal_masks[i]
+            causal_masks[i] = causal_mask
+
+        col_extracts = torch.stack(col_extracts)
+        row_extracts = torch.stack(row_extracts)
+        extract_att_mask = torch.stack(causal_masks)
+
+        prompt_answer_ids = prompt_output["input_ids"].to(cur_device)
+
+        # print(self.model.tokenizer.batch_decode(torch.cat([prompt_output["input_ids"][:graph.num_node_feat][graph.node_map.cpu().numpy()], prompt_output["input_ids"][graph.num_node_feat:]])))
+
+        prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(prompt_answer_ids)
+
+        past_key_values = None
+
+        eos_reached = torch.zeros(len(target_index), dtype=torch.bool).to(prompt_answer_embs.device)
+
+        att_mask = prompt_output["attention_mask"].to(cur_device)
+
+        generate_text = []
+        for i in range(128):
+            if i == 0:
+                out = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, partial_grad=True, attention_mask=att_mask,
+                                             map_node=True, extracts=(
+                    row_extracts.to(cur_device), col_extracts.to(cur_device)), extract_attention_mask=extract_att_mask.to(cur_device), use_cache=True)
+                logits = out.logits[target_index, -1, :32000]
+                past_key_values = ()
+                for i, past_val in enumerate(out.past_key_values):
+                    if i < self.model.icae.get_base_model().model.n_layers:
+                        past_key_values += ((past_val[0][:graph.num_node_feat][graph.node_map.cpu()][target_index], past_val[1][:graph.num_node_feat][graph.node_map.cpu()][target_index]),)
+                    else:
+                        past_key_values += ((past_val[0][:len(graph.node_map)][target_index], past_val[1][:len(graph.node_map)][target_index]),)
+                att_mask = att_mask[:graph.num_node_feat][graph.node_map.cpu()][target_index]
+                extract_att_mask = extract_att_mask[:len(graph.node_map)][target_index]
+            else:
+                out = self.model.icae(inputs_embeds=prompt_answer_embs, use_cache=True, past_key_values=past_key_values, attention_mask=att_mask, extract_attention_mask=extract_att_mask.to(cur_device))
+                logits = out.logits[:, -1, :32000]
+                past_key_values = out.past_key_values
+
+            next_token_id = torch.argmax(logits, dim=-1, keepdim=True)
+
+            eos_reached = torch.logical_or(eos_reached, (next_token_id == self.model.tokenizer.eos_token_id).view(-1))
+
+            prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(next_token_id).to(prompt_answer_embs.device)
+
+            generate_text.append(next_token_id.view(-1, 1))
+            att_mask = torch.cat(
+                [att_mask, torch.ones((len(att_mask), 1), dtype=att_mask.dtype, device=att_mask.device)], dim=-1)
+            extract_att_mask = extract_att_mask[:,-1:]
+            extract_att_mask = torch.cat([extract_att_mask, torch.full((len(extract_att_mask),1), 0).unsqueeze(-1)], dim=-1)
+
+            if torch.all(eos_reached):
+                break
+
+        generate_text = torch.cat(generate_text, dim=-1)
+        generate_text[generate_text >= 32000] = 1
+
+        generated_text = self.model.tokenizer.batch_decode(generate_text)
+
+        return generated_text
+
+    def extract_content_after_inst(self, generated_text):
+        # Find the index of the closing tag [/INST]
+        closing_tag = "[/INST]"
+        start_index = generated_text.find(closing_tag)
+
+        if start_index == -1:
+            # If the closing tag is not found, return the entire text
+            return generated_text
+
+        # Extract the content after the closing tag
+        content_after_inst = generated_text[start_index + len(closing_tag):].strip()
+
+        return content_after_inst
