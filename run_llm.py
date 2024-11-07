@@ -4,6 +4,8 @@ from collections import OrderedDict
 from datetime import timedelta
 
 import shutil
+
+import numpy as np
 from lightning.pytorch.loggers import WandbLogger
 from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
@@ -41,6 +43,9 @@ def main(params):
                                save_dir=params.exp_dir, offline=params.offline_log, )
     print("available devices: ", torch.cuda.device_count())
     checkpoint_dir = os.path.join(params.exp_dir, params.log_project)
+    if params.ckpt_save_path is not None:
+        date = params.exp_dir.split("/")[-1]
+        params.ckpt_save_path = params.ckpt_save_path+"/" + date
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
@@ -149,7 +154,7 @@ def main(params):
 
         val_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
-                                            split="val",
+                                            split="train",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             num_workers=params.num_workers, filter_func=filter_func,
@@ -192,7 +197,8 @@ def main(params):
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
 
     model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm)
-    train_params = list(model.parameters())
+    # train_params = list(model.parameters())
+    train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
     optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr*0.1)

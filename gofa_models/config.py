@@ -36,7 +36,6 @@ class GOFAMistralConfig(MistralConfig):
         self.gnn_mlp_type = gnn_mlp_type
         self.gnn_type = gnn_type
         self.pretraining_tp = pretraining_tp
-        self.intermediate_size = dim * 2
         self.position_encoding = position_encoding
         self.interleave = interleave
         self.gating = gating

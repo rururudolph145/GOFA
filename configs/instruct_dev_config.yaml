@@ -1,20 +1,20 @@
 run_mode: "ft"
-load_model: False
+load_model: True
 data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
 #load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_3.pth"
-load_dir: "./saved_exp/2024-10-18_10:50:18.014109_675/best_ckpt.pth"
+load_dir: "./saved_exp/2024-10-29_20:31:21.789656_782/best_ckpt.pth"
 grad_acc_step: 16
 last_epochs: 0
-num_epochs: 1
-mode: autoencoder
+num_epochs: 0
+mode: autoencodergen
 batch_size: 1
-lr: 0.0001
-l2: 0.1
+lr: 0.00001
+l2: 0.0
 selections: True
 llm_max_length: 512
 mlp_type: llama
-gnn_type: combine
-num_layers: 2
+gnn_type: cp
+num_layers: 3
 gating: True
 interleave: False
 val_interval:
@@ -32,7 +32,7 @@ sample_size_per_task:
 #  - 100000
 #  - 50000
 #  - 200000
-  - 200000
+  - 50000
 hops:
 #  - 3
 #  - 3

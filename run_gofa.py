@@ -190,7 +190,7 @@ def main(params):
                 train_params += [param]
     optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr*0.1)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr)
     lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
     # lr_scheduler_config = None
 

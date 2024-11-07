@@ -9,9 +9,11 @@ from torch.nn import Linear
 from torch_geometric.nn import MessagePassing
 from torch_geometric.typing import Adj, OptTensor
 from torch_geometric.utils import softmax, add_self_loops
+from transformers import Cache
 from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaMLP, LlamaRotaryEmbedding, \
     rotate_half, apply_rotary_pos_emb
-from transformers.models.mistral.modeling_mistral import MistralRotaryEmbedding
+from transformers.models.mistral.modeling_mistral import MistralRotaryEmbedding, MistralAttention, repeat_kv, \
+    MistralMLP, MistralRMSNorm
 
 import pdb
 from gp.nn.models.util_model import MLP
@@ -563,3 +565,163 @@ class GOFAGNN(torch.nn.Module):
             hidden_states = output
         return hidden_states
 
+def apply_rotary_pos_emb_single(q, cos, sin, position_ids, unsqueeze_dim=1):
+    cos = cos[position_ids].unsqueeze(unsqueeze_dim)
+    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    return q_embed
+
+
+class GOFAAttention(MessagePassing):
+    """
+    Multi-headed attention from 'Attention Is All You Need' paper. Modified to use sliding window attention: Longformer
+    and "Generating Long Sequences with Sparse Transformers".
+    """
+
+    def __init__(self, config, layer_idx: Optional[int] = None):
+        super().__init__(node_dim=0, aggr="add")
+        self.config = config
+        self.layer_idx = layer_idx
+
+        self.attention_dropout = config.attention_dropout
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rope_theta = config.rope_theta
+        self.is_causal = True
+
+        if (self.head_dim * self.num_heads) != self.hidden_size:
+            raise ValueError(
+                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
+                f" and `num_heads`: {self.num_heads})."
+            )
+        self.gq_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.gk_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.gv_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.go_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+
+        self.rotary_emb = MistralRotaryEmbedding(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_hidden_states: torch.Tensor,
+    ):
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.gq_proj(hidden_states)
+        key_states = self.gk_proj(hidden_states)
+        value_states = self.gv_proj(hidden_states)
+
+        edge_key_states = self.gk_proj(edge_hidden_states)
+        edge_value_states = self.gv_proj(edge_hidden_states)
+
+        out = self.propagate(edge_index, query=query_states, key=key_states, value=value_states, edge_key=edge_key_states, edge_value=edge_value_states)
+
+        out = self.go_proj(out)
+
+        return out
+
+    def message(self, query_i: Tensor, key_j: Tensor, value_j, edge_key: Tensor, edge_value: Tensor, index: Tensor, ptr: OptTensor,
+                size_i: Optional[int]) -> Tensor:
+        bsz, q_len, dim = query_i.size()
+        query_states = query_i
+        key_states = torch.stack([key_j, edge_key], dim=2).view(bsz, q_len*2, -1)
+        value_states = torch.stack([value_j, edge_value], dim=2).view(bsz, q_len*2, -1)
+        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(bsz, 2*q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, 2*q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        cos_q, sin_q = self.rotary_emb(value_states, seq_len=q_len)
+        cos_k, sin_k = self.rotary_emb(value_states, seq_len=q_len*2)
+        query_states = apply_rotary_pos_emb_single(query_states, cos_q, sin_q, torch.arange(0, q_len, device=query_states.device).unsqueeze(0))
+        key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k, torch.arange(0, q_len*2, device=query_states.device).unsqueeze(0))
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        alpha = (query_states @ key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        softmax_ind = index.repeat_interleave(q_len*2)
+
+        alpha = alpha.permute(1, 0, 3, 2).reshape(self.num_heads, -1, q_len)
+
+        if alpha.size() != (self.num_heads, q_len * 2 * bsz, q_len):
+            raise ValueError(f"`alpha` should be of size {(self.num_heads, q_len * 2 * bsz, q_len)}, but is"
+                             f" {alpha.size()}")
+
+        alpha = softmax(alpha, softmax_ind, num_nodes=size_i, dim=1)
+        alpha = F.dropout(alpha, p=self.attention_dropout, training=self.training)
+        alpha = alpha.view(self.num_heads, bsz, q_len*2, q_len).permute(1, 0, 3, 2)
+
+        out = alpha @ value_states
+        out = out.transpose(1, 2).contiguous()
+        out = out.reshape(bsz, q_len, self.hidden_size)
+
+        return out
+
+    def __repr__(self) -> str:
+        return (f'{self.__class__.__name__}({self.in_channels}, '
+                f'{self.out_channels}, heads={self.heads})')
+
+
+class GOFADecoderLayer(nn.Module):
+    def __init__(self, config, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+
+        self.self_attn = GOFAAttention(config=config, layer_idx=layer_idx)
+
+        self.mlp = MistralMLP(config)
+        self.input_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_hidden_states: torch.Tensor,
+    ):
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*):
+                attention mask of size `(batch_size, sequence_length)` if flash attention is used or `(batch_size, 1,
+                query_sequence_length, key_sequence_length)` if default attention is used.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence
+            kwargs (`dict`, *optional*):
+                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
+                into the model
+        """
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states = self.self_attn(
+            hidden_states=hidden_states,
+            edge_index=edge_index,
+            edge_hidden_states=edge_hidden_states,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        return hidden_states

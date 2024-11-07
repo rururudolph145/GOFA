@@ -8,7 +8,7 @@ from typing import Optional
 from peft import (get_peft_model, LoraConfig)
 from torch.nn.functional import gelu
 from transformers import BitsAndBytesConfig
-from modules.gofa_modeling import MPLMForCausalLM
+from modules.gofa_modeling import MPLMForCausalLM, MPLMSparseForCausalLM
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -135,12 +135,13 @@ class MPLMLora(nn.Module):
         self.icae = MPLMForCausalLM.from_pretrained(self.model_name, gofa_config,
                                                            torch_dtype=torch.float16 if training_args.bf16 is False else torch.bfloat16,
                                                            use_flash_attention_2=False, resume_download=False)
+        self.icae.model.align_weight()
         self.eos_id = 1
         self.dim = self.icae.config.hidden_size
         # if self.quantization:
         #     self.icae = prepare_model_for_kbit_training(self.icae)
         lora_config = self.create_lora_config()
-        self.icae = get_peft_model(self.icae, lora_config)
+        # self.icae = get_peft_model(self.icae, lora_config)
         self.tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
         self.left_tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
         self.left_tokenizer.padding_side = "left"
@@ -167,7 +168,62 @@ class MPLMLora(nn.Module):
 
             bias="none",
 
-            task_type="CAUSAL_LM"
+            task_type="CAUSAL_LM",
+
+        )
+        return lora_config
+
+    def get_tokenizer(self):
+        return self.tokenizer
+
+
+class MPLMSparseLora(nn.Module):
+    def __init__(self, model_args, training_args, gofa_config):
+        super().__init__()
+        self.model_args = model_args
+        self.training_args = training_args
+        self.model_name = model_args.model_name_or_path
+        # self.auto_encoder = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        self.quantization = model_args.quantization
+        self.icae = MPLMSparseForCausalLM.from_pretrained(self.model_name, gofa_config,
+                                                           torch_dtype=torch.float16 if training_args.bf16 is False else torch.bfloat16,
+                                                           use_flash_attention_2=False, resume_download=False)
+        self.icae.model.align_weight()
+        self.icae.lm_head.requires_grad_(False)
+        self.icae.model.embed_tokens.requires_grad_(False)
+        self.eos_id = 1
+        self.dim = self.icae.config.hidden_size
+        # if self.quantization:
+        #     self.icae = prepare_model_for_kbit_training(self.icae)
+        lora_config = self.create_lora_config()
+        # self.icae = get_peft_model(self.icae, lora_config)
+        self.tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
+        self.left_tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
+        self.left_tokenizer.padding_side = "left"
+        self.left_tokenizer.truncation_side = "left"
+
+    def create_bnb_config(self):
+        """
+        quantization configuration.
+        """
+        bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
+                                        bnb_4bit_compute_dtype=torch.bfloat16)
+        # bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+
+        return bnb_config
+
+    def create_lora_config(self):
+        lora_config = LoraConfig(
+
+            r=self.model_args.lora_r,
+
+            lora_alpha=32,
+
+            lora_dropout=self.model_args.lora_dropout,
+
+            bias="none",
+
+            task_type="CAUSAL_LM",
 
         )
         return lora_config

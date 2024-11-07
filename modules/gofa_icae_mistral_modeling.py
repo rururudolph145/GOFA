@@ -76,6 +76,8 @@ class MistralICAE(torch.nn.Module):
                                                             torch_dtype=torch.float16 if training_args.bf16 is False
                                                             else torch.bfloat16,
                                                             use_flash_attention_2=False, resume_download=False)
+        if gofa_config.gnn_type == "cp":
+            self.icae.model.align_weight()
 
         self.vocab_size = self.icae.config.vocab_size + 1  # [PAD] token
         self.pad_token_id = self.vocab_size - 1

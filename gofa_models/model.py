@@ -1,3 +1,4 @@
+import random
 import re
 from collections import namedtuple, OrderedDict
 
@@ -8,10 +9,23 @@ from copy import deepcopy
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.layer.pyg import RGCNEdgeConv
 from gp.nn.layer.pyg import TransformerConv as MConv
-from .helper import GOFALlamaHelper, GOFAMistralHelper, LlamaHelper, MPLMHelper
+from .helper import GOFALlamaHelper, GOFAMistralHelper, LlamaHelper, MPLMHelper, MPLMSparseHelper
 
 LLM_DIM_DICT = {"ST": 768, "BERT": 768, "e5": 1024, "llama2_7b": 4096, "llama2_13b": 5120, "mamba": 768, "icae": 4096,
                 "icae_mem": 4096}
+
+
+def add_self_loop(data ,**kwargs):
+    edge_index = data.edge_index
+    edge_index = torch.cat([edge_index, torch.arange(data.num_nodes, device=edge_index.device).repeat(2, 1)], dim=-1)
+    edge_attr = data.edge_attr
+    edge_attr = np.concatenate([edge_attr, np.array(["This is an edge connecting a node to itself."])])
+    edge_map = data.edge_map
+    edge_map = torch.cat([edge_map, torch.tensor([len(edge_attr) - 1] * data.num_nodes, device=edge_map.device)])
+    data.edge_index = edge_index
+    data.edge_map = edge_map
+    data.edge_attr = edge_attr
+    return data
 
 def print_fixed_length(text, line_width=120):
     t_pointer = 0
@@ -196,6 +210,8 @@ class GOFA(torch.nn.Module):
             self.llm_model = LlamaHelper(transformer_args)
         elif base_llm == 'mistral7bmplm':
             self.llm_model = MPLMHelper(transformer_args)
+        elif base_llm == 'mistral7bmplmsparse':
+            self.llm_model = MPLMSparseHelper(transformer_args)
         else:
             raise NotImplementedError(base_llm + " is not supported. Please choose from: llama7b, mistral7b,")
 
@@ -266,6 +282,7 @@ class GOFA(torch.nn.Module):
                            answer=answer_texts)
 
     def mplm_decode(self, g):
+        # g = add_self_loop(g)
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
             node_text = g.x[g.node_map.cpu().numpy()]
@@ -284,6 +301,14 @@ class GOFA(torch.nn.Module):
             else:
                 true_text_inputs[g.question_index[i]] = "Question: " + true_text_inputs[g.question_index[i]] + " Answer:" + t
                 text_inputs[g.question_index[i]] = "Question: " + text_inputs[g.question_index[i]] + " Answer:"
+                # tokens = self.llm_model.model.tokenizer(true_text_inputs[g.question_index[i]], add_special_tokens=False, padding=False, truncation=False)["input_ids"]
+                # if len(tokens) > (self.llm_model.model.training_args.model_max_length - 25):
+                #     extra_index = int(len(tokens) - (self.llm_model.model.training_args.model_max_length - 25))
+                #     start_index = round(extra_index * random.random())
+                #     tokens = tokens[start_index: start_index + (self.llm_model.model.training_args.model_max_length - 25)]
+                # question = self.llm_model.model.tokenizer.decode(tokens)
+                # true_text_inputs[g.question_index[i]] = "Question: " + question + " Answer:" + t
+                # text_inputs[g.question_index[i]] = "Question: " + question + " Answer:"
         answer_logits, answer_id, masks = self.llm_model(true_text_inputs, masked_data=text_inputs, graph=g)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
         res_answer = self.logit_to_text(answer_logits, masks)
@@ -404,19 +429,6 @@ class GOFA(torch.nn.Module):
     def auto_encode(self, g):
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
-            # edge_attr_list = []
-            # for i, t in enumerate(g.edge_attr):
-            #     edge = g.edge_index[:, i]
-            #     node_text = [g.x[n] for n in edge]
-            #     pattern = r"This is node \[([^\]]+)\]"
-            #     for j, text in enumerate(node_text):
-            #         match = re.search(pattern, text)
-            #         if match:
-            #             node_text[j] = "["+match.group(1)+"]"
-            #         else:
-            #             node_text[j] = "prompt node"
-            #     edge_text = f"This edge connects {node_text[0]} node to {node_text[1]} node. {t}"
-            #     edge_attr_list.append(edge_text)
             text_inputs = np.concatenate([g.x, g.edge_attr], axis=0)
         else:
             text_inputs = g.x
@@ -429,7 +441,7 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "Follow the prompt in the prompt node." for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "" for p in prompt_texts]
         emb = emb[g.question_index]
         answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_input_texts)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
@@ -440,7 +452,7 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "Follow the prompt in the prompt node." for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "" for p in prompt_texts]
         emb = emb[g.question_index]
         generated_text = self.llm_model.generate(emb, prompt=prompt_input_texts)
         for i, txt in enumerate(generated_text):
@@ -469,7 +481,7 @@ class GOFA(torch.nn.Module):
 
     def save_partial(self, save_dir):
         try:
-            state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
+            state_dict = self.llm_model.model.icae.get_base_model().model.g_layers.state_dict()
         except AttributeError as e:
             state_dict = OrderedDict()
         full_state_dict = self.state_dict()
@@ -493,7 +505,7 @@ class GOFA(torch.nn.Module):
             else:
                 new_state_dict[name] = state_dict[name]
         try:
-            self.llm_model.model.icae.model.model.g_layers.load_state_dict(new_state_dict, strict=False)
+            self.llm_model.model.icae.get_base_model().model.g_layers.load_state_dict(new_state_dict, strict=False)
         except AttributeError:
             pass
         self.load_state_dict(new_state_dict, strict=False)
