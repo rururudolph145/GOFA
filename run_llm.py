@@ -197,8 +197,8 @@ def main(params):
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
 
     model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm)
-    # train_params = list(model.parameters())
-    train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
+    train_params = list(model.parameters())
+    # train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
     optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr*0.1)

@@ -19,7 +19,7 @@ def add_self_loop(data ,**kwargs):
     edge_index = data.edge_index
     edge_index = torch.cat([edge_index, torch.arange(data.num_nodes, device=edge_index.device).repeat(2, 1)], dim=-1)
     edge_attr = data.edge_attr
-    edge_attr = np.concatenate([edge_attr, np.array(["This is an edge connecting a node to itself."])])
+    # edge_attr = np.concatenate([edge_attr, np.array(["This is an edge connecting a node to itself."])])
     edge_map = data.edge_map
     edge_map = torch.cat([edge_map, torch.tensor([len(edge_attr) - 1] * data.num_nodes, device=edge_map.device)])
     data.edge_index = edge_index
@@ -282,7 +282,7 @@ class GOFA(torch.nn.Module):
                            answer=answer_texts)
 
     def mplm_decode(self, g):
-        # g = add_self_loop(g)
+        g = add_self_loop(g)
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
             node_text = g.x[g.node_map.cpu().numpy()]

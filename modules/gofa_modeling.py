@@ -1360,7 +1360,7 @@ class MPLMSparseModel(MistralModel):
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.g_layers = nn.ModuleList()
-        self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(gofa_config, i) for i in range(gofa_config.num_layers)]))
+        self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(config, i) for i in range(gofa_config.num_layers)]))
         self.g_layers.append(MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps))
         self.mem_token = gofa_config.mem_token
         self.llama_dtype = gofa_config.llama_dtype
@@ -1486,15 +1486,17 @@ class MPLMSparseModel(MistralModel):
                 hidden_states = torch.cat(
                     [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]], dim=0)
                 node_mask = mem_mask[:cur_node_size][graph.node_map]
-                edge_mask = mem_mask[cur_node_size:][graph.edge_map]
+                edge_mask = mem_mask[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
                 attention_mask = torch.cat(
                     [attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
                 cur_node_size = len(graph.node_map)
             if g_layer_idx >= 0 and not past_key_state and graph is not None:
                 gnn_input = hidden_states[:cur_node_size]
-                gnn_edge_input = hidden_states[cur_node_size:][graph.edge_map]
+                gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
 
                 graph_output = self.g_layers[0][g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input, mem_mask=node_mask, edge_mask=edge_mask, num_nodes=graph.num_nodes, node_order=graph.node_order, edge_order=graph.edge_order)
+                # print(graph_output.size())
+                # print(graph_output)
                 # graph_output = self.g_layers[2][g_layer_idx](output)
                 # graph_output = torch.cat([output, hidden_states[cur_node_size:]], dim=0)
                 # gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
@@ -1506,11 +1508,15 @@ class MPLMSparseModel(MistralModel):
                 with torch.no_grad():
                     layer_outputs = self.forward_llm_layer(hidden_states, self.llama_dtype, decoder_layer, attention_mask, position_ids, past_key_values, output_attentions, use_cache)
             else:
-                # layer_outputs = self.forward_llm_layer(hidden_states[cur_node_size:], self.llama_dtype, decoder_layer, attention_mask[cur_node_size:], position_ids,
-                #                        past_key_values, output_attentions, use_cache)
-                layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:], attention_mask=attention_mask[cur_node_size:], position_ids=position_ids,
-                                              past_key_value=past_key_values, output_attentions=output_attentions,
-                                              use_cache=use_cache, )
+                layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:],
+                                                                          attention_mask=attention_mask[cur_node_size:],
+                                                                          position_ids=position_ids,
+                                                                          past_key_value=past_key_values,
+                                                                          output_attentions=output_attentions,
+                                                                          use_cache=use_cache, )
+                # layer_outputs = decoder_layer(hidden_states[cur_node_size:], attention_mask=attention_mask[cur_node_size:], position_ids=position_ids,
+                #                               past_key_value=past_key_values, output_attentions=output_attentions,
+                #                               use_cache=use_cache, )
 
             hidden_states = layer_outputs[0]
             if graph_output is not None:

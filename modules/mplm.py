@@ -8,14 +8,14 @@ from transformers import MistralConfig, Cache
 from torch import Tensor
 from torch_geometric.typing import Adj, OptTensor
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-from transformers.models.mistral.modeling_mistral import MistralRotaryEmbedding, repeat_kv, \
-    MistralMLP, MistralRMSNorm, MistralDecoderLayer, MistralAttention, rotate_half
-from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaMLP, LlamaRotaryEmbedding, \
-    rotate_half, apply_rotary_pos_emb
+from transformers.models.mistral.modeling_mistral import (MistralRotaryEmbedding, repeat_kv, MistralMLP,
+                                                          MistralRMSNorm, \
+    MistralDecoderLayer, MistralAttention, rotate_half)
+from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaMLP, LlamaRotaryEmbedding, rotate_half, \
+    apply_rotary_pos_emb
 from torch_geometric.utils import softmax, add_self_loops
 
 import torch.nn.functional as F
-
 
 
 def apply_rotary_pos_emb_single(q, cos, sin, position_ids, unsqueeze_dim=1):
@@ -30,17 +30,12 @@ class MPLMMistralAttention(MistralAttention):
     Multi-headed attention from 'Attention Is All You Need' paper. Modified to use sliding window attention: Longformer
     and "Generating Long Sequences with Sparse Transformers".
     """
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        kv_states: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
-        cache_position: Optional[torch.LongTensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+
+    def forward(self, hidden_states: torch.Tensor, kv_states: Optional[torch.Tensor] = None,
+            attention_mask: Optional[torch.Tensor] = None, position_ids: Optional[torch.LongTensor] = None,
+            past_key_value: Optional[Cache] = None, output_attentions: bool = False, use_cache: bool = False,
+            cache_position: Optional[torch.LongTensor] = None, ) -> Tuple[
+        torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
         _, k_len, _ = kv_states.size()
@@ -72,8 +67,12 @@ class MPLMMistralAttention(MistralAttention):
             q_seq_len += past_query_length
         cos_q, sin_q = self.rotary_emb(value_states, seq_len=q_seq_len)
         cos_k, sin_k = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states = apply_rotary_pos_emb_single(query_states, cos_q, sin_q, torch.arange(past_query_length, q_seq_len, device=query_states.device).unsqueeze(0))
-        key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k, torch.arange(past_key_value_length, kv_seq_len, device=query_states.device).unsqueeze(0))
+        query_states = apply_rotary_pos_emb_single(query_states, cos_q, sin_q,
+                                                   torch.arange(past_query_length, q_seq_len,
+                                                                device=query_states.device).unsqueeze(0))
+        key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k,
+                                                 torch.arange(past_key_value_length, kv_seq_len,
+                                                              device=query_states.device).unsqueeze(0))
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin_k, "cos": cos_k}  # Specific to RoPE models
@@ -126,18 +125,12 @@ class MPLMDecoderLayer(nn.Module):
         self.mlp = MistralMLP(config)
         self.input_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        kv_states: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+
+    def forward(self, hidden_states: torch.Tensor, kv_states: Optional[torch.Tensor] = None,
+            attention_mask: Optional[torch.Tensor] = None, position_ids: Optional[torch.LongTensor] = None,
+            past_key_value: Optional[Cache] = None, output_attentions: Optional[bool] = False,
+            use_cache: Optional[bool] = False, cache_position: Optional[torch.LongTensor] = None, **kwargs, ) -> Tuple[
+        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -165,16 +158,10 @@ class MPLMDecoderLayer(nn.Module):
         kv_states = self.input_layernorm(kv_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            kv_states=kv_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-        )
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(hidden_states=hidden_states,
+            kv_states=kv_states, attention_mask=attention_mask, position_ids=position_ids,
+            past_key_value=past_key_value, output_attentions=output_attentions, use_cache=use_cache,
+            cache_position=cache_position, )
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -195,7 +182,7 @@ class MPLMDecoderLayer(nn.Module):
 
 
 class LlamaRotaryEmbedding2D(nn.Module):
-    def __init__(self, dim, max_position_embeddings=(128,2048), base=10000, device=None):
+    def __init__(self, dim, max_position_embeddings=(128, 2048), base=10000, device=None):
         super().__init__()
 
         self.dim = dim
@@ -206,17 +193,17 @@ class LlamaRotaryEmbedding2D(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
-        )
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=self.inv_freq.device,
+            dtype=torch.get_default_dtype())
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = (max(seq_len[0], self.max_seq_len_cached[0]), max(seq_len[1], self.max_seq_len_cached[1]))
+        self.max_seq_len_cached = (
+        max(seq_len[0], self.max_seq_len_cached[0]), max(seq_len[1], self.max_seq_len_cached[1]))
         x = torch.arange(self.max_seq_len_cached[0], device=device, dtype=self.inv_freq.dtype)
         y = torch.arange(self.max_seq_len_cached[1], device=device, dtype=self.inv_freq.dtype)
 
         freqs_x = torch.outer(x, self.inv_freq)
-        freqs_x = torch.stack([freqs_x]*len(y), dim=1)
+        freqs_x = torch.stack([freqs_x] * len(y), dim=1)
         freqs_y = torch.outer(y, self.inv_freq)
         freqs_y = torch.stack([freqs_y] * len(x), dim=0)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
@@ -226,13 +213,12 @@ class LlamaRotaryEmbedding2D(nn.Module):
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len[0] > self.max_seq_len_cached[0] or seq_len[1]>self.max_seq_len_cached[1]:
+        if seq_len[0] > self.max_seq_len_cached[0] or seq_len[1] > self.max_seq_len_cached[1]:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
-        return (
-            self.cos_cached[:seq_len[0], :seq_len[1]].to(dtype=x.dtype),
-            self.sin_cached[:seq_len[0], :seq_len[1]].to(dtype=x.dtype),
-        )
+        return (self.cos_cached[:seq_len[0], :seq_len[1]].to(dtype=x.dtype),
+                self.sin_cached[:seq_len[0], :seq_len[1]].to(dtype=x.dtype),)
+
 
 def apply_rotary_pos_emb_single_2d(q, cos, sin, position_ids, unsqueeze_dim=1):
     rown, coln = position_ids[0].size()[0], position_ids[1].size()[0]
@@ -240,6 +226,7 @@ def apply_rotary_pos_emb_single_2d(q, cos, sin, position_ids, unsqueeze_dim=1):
     sin = sin[position_ids[0].view(-1, 1).repeat(1, coln), position_ids[1].repeat(rown, 1)].unsqueeze(unsqueeze_dim)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     return q_embed
+
 
 class MPLMSparseAttention(MessagePassing):
     """
@@ -263,10 +250,8 @@ class MPLMSparseAttention(MessagePassing):
         self.is_causal = True
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
+            raise ValueError(f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
+                             f" and `num_heads`: {self.num_heads}).")
         self.gq_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.gk_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.gv_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
@@ -278,12 +263,11 @@ class MPLMSparseAttention(MessagePassing):
         #     base=self.rope_theta,
         # )
 
-        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=2048,
-            base=self.rope_theta, )
+        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=2048, base=self.rope_theta, )
 
     def forward_llm(self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None, past_key_value: Optional[Cache] = None,
-            output_attentions: bool = False, use_cache: bool = False, **kwargs, ) -> Tuple[
+                    position_ids: Optional[torch.LongTensor] = None, past_key_value: Optional[Cache] = None,
+                    output_attentions: bool = False, use_cache: bool = False, **kwargs, ) -> Tuple[
         torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -346,38 +330,35 @@ class MPLMSparseAttention(MessagePassing):
 
         return attn_output, attn_weights, past_key_value
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_hidden_states: torch.Tensor,
-        mem_mask,
-        edge_mask,
-        num_nodes,
-        node_order,
-        edge_order,
-    ):
+    def forward(self, hidden_states: torch.Tensor, edge_index: torch.Tensor, edge_hidden_states: torch.Tensor, mem_mask,
+            edge_mask, num_nodes, node_order, edge_order, past_key_value, ):
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.gq_proj(hidden_states)
         key_states = self.gk_proj(hidden_states)
         value_states = self.gv_proj(hidden_states)
 
-        edge_key_states = self.gk_proj(edge_hidden_states)
-        edge_value_states = self.gv_proj(edge_hidden_states)
+        if edge_hidden_states is not None:
+            edge_key_states = self.gk_proj(edge_hidden_states)
+            edge_value_states = self.gv_proj(edge_hidden_states)
+        else:
+            edge_key_states = None
+            edge_value_states = None
 
-
-        out = self.propagate(edge_index, query=query_states, key=key_states, value=value_states, edge_key=edge_key_states, edge_value=edge_value_states, mem_mask = mem_mask, edge_mask=edge_mask, num_nodes=num_nodes, node_order=node_order, edge_order=edge_order)
+        out = self.propagate(edge_index, query=query_states, key=key_states, value=value_states,
+                             edge_key=edge_key_states, edge_value=edge_value_states, mem_mask=mem_mask,
+                             edge_mask=edge_mask, num_nodes=num_nodes, node_order=node_order, edge_order=edge_order,
+                             past_key_value=past_key_value)
 
         out = self.go_proj(out)
 
-        print((out ** 2).sum(dim=-1).mean())
-
         return out
 
-    def message(self, query_i: Tensor, key_j: Tensor, value_j, edge_key: Tensor, edge_value: Tensor, index: Tensor, ptr: OptTensor,
-                size_i: Optional[int], mem_mask_j, edge_mask, num_nodes, node_order_i, edge_order) -> Tensor:
+    def message(self, query_i: Tensor, key_j: Tensor, value_j, edge_key: Tensor, edge_value: Tensor, index: Tensor,
+                ptr: OptTensor, size_i: Optional[int], mem_mask_j, edge_mask, num_nodes, node_order_i, edge_order,
+                past_key_value) -> Tensor:
         bsz, q_len, dim = query_i.size()
+        _, k_len, _ = edge_key.size()
         query_states = query_i
 
         query_pos_ids = torch.ones((bsz, q_len), device=query_states.device, dtype=torch.long)
@@ -392,29 +373,25 @@ class MPLMSparseAttention(MessagePassing):
         key_pos_ids = torch.cumsum(key_pos_ids, dim=-1)
         kmax_pos_ids = key_pos_ids.max() + 1
 
-        overall_mask = torch.stack([overall_mask]*q_len, dim=1)
+        overall_mask = torch.stack([overall_mask] * q_len, dim=1)
         overall_mask[-num_nodes:, :, q_len:] = 0
         overall_mask = torch.logical_not(overall_mask) * torch.finfo(torch.float32).min
         mask = torch.full((q_len, q_len), torch.finfo(torch.float32).min, device=overall_mask.device)
         mask_cond = torch.arange(mask.size(-1), device=mask.device)
         mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
         overall_mask[-num_nodes:, :, :q_len] += mask
-        key_states = torch.stack([key_j, edge_key], dim=2).view(bsz, q_len*2, -1)
-        value_states = torch.stack([value_j, edge_value], dim=2).view(bsz, q_len*2, -1)
+        key_states = torch.cat([key_j, edge_key], dim=1)
+        value_states = torch.cat([value_j, edge_value], dim=1)
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, 2*q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, 2*q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        # cos_q, sin_q = self.rotary_emb(value_states, seq_len=(1, q_len))
-        # cos_k, sin_k = self.rotary_emb(value_states, seq_len=(bsz, q_len*2))
-        # query_states = apply_rotary_pos_emb_single_2d(query_states.unsqueeze(2), cos_q, sin_q, (torch.arange(0, 1, device=query_states.device).unsqueeze(0), torch.arange(0, q_len, device=query_states.device).unsqueeze(0)))
-        # key_states = apply_rotary_pos_emb_single_2d(key_states.unsqueeze(1), cos_k, sin_k, (torch.arange(0, bsz, device=query_states.device).unsqueeze(0), torch.arange(0, 2*q_len, device=query_states.device).unsqueeze(0)), unsqueeze_dim=0)
-        # query_states = query_states.squeeze(2)
-        # key_states = key_states.squeeze(1).permute(1, 0, 2, 3)
+        key_states = key_states.view(bsz, q_len + k_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len + k_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
         cos_q, sin_q = self.rotary_emb(value_states, seq_len=qmax_pos_ids)
         cos_k, sin_k = self.rotary_emb(value_states, seq_len=kmax_pos_ids)
         query_states = apply_rotary_pos_emb_single(query_states, cos_q, sin_q, query_pos_ids)
         key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k, key_pos_ids)
-        # key_states = key_states.unsqueeze(0).view(self.num_key_value_heads, bsz, 2* q_len, self.head_dim).permute(1, 0, 2, 3)
+        # key_states = key_states.unsqueeze(0).view(self.num_key_value_heads, bsz, 2* q_len, self.head_dim).permute(
+        # 1, 0, 2, 3)
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -423,17 +400,17 @@ class MPLMSparseAttention(MessagePassing):
         # overall_mask = torch.logical_not(overall_mask) * torch.finfo(torch.float32).min
         alpha += overall_mask.unsqueeze(1)
 
-        softmax_ind = index.repeat_interleave(q_len*2)
+        softmax_ind = index.repeat_interleave(q_len + k_len)
 
         alpha = alpha.permute(1, 0, 3, 2).reshape(self.num_heads, -1, q_len)
 
-        if alpha.size() != (self.num_heads, q_len * 2 * bsz, q_len):
+        if alpha.size() != (self.num_heads, (q_len + k_len) * bsz, q_len):
             raise ValueError(f"`alpha` should be of size {(self.num_heads, q_len * 2 * bsz, q_len)}, but is"
                              f" {alpha.size()}")
 
         alpha = softmax(alpha, softmax_ind, num_nodes=size_i, dim=1)
         alpha = F.dropout(alpha, p=self.attention_dropout, training=self.training)
-        alpha = alpha.view(self.num_heads, bsz, q_len*2, q_len).permute(1, 0, 3, 2)
+        alpha = alpha.view(self.num_heads, bsz, q_len + k_len, q_len).permute(1, 0, 3, 2)
 
         out = alpha @ value_states
         out = out.transpose(1, 2).contiguous()
@@ -456,17 +433,12 @@ class MPLMSparseDecoderLayer(nn.Module):
         self.mlp = MistralMLP(config)
         self.input_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-    def forward(
-        self,
-        hidden_states: torch.Tensor, edge_index: torch.Tensor, edge_hidden_states: torch.Tensor, mem_mask=None, edge_mask=None, num_nodes=None, node_order=None, edge_order=None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
-    ):
+
+    def forward(self, hidden_states: torch.Tensor, edge_index: torch.Tensor, edge_hidden_states: torch.Tensor,
+            mem_mask=None, edge_mask=None, num_nodes=None, node_order=None, edge_order=None,
+            attention_mask: Optional[torch.Tensor] = None, position_ids: Optional[torch.LongTensor] = None,
+            past_key_value: Optional[Cache] = None, output_attentions: Optional[bool] = False,
+            use_cache: Optional[bool] = False, cache_position: Optional[torch.LongTensor] = None, **kwargs, ):
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -489,18 +461,12 @@ class MPLMSparseDecoderLayer(nn.Module):
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
+        edge_hidden_states = self.input_layernorm(edge_hidden_states)
 
         # Self Attention
-        hidden_states = self.self_attn(
-            hidden_states=hidden_states,
-            edge_index=edge_index,
-            edge_hidden_states=edge_hidden_states,
-            mem_mask=mem_mask,
-            edge_mask=edge_mask,
-            num_nodes=num_nodes,
-            node_order=node_order,
-            edge_order=edge_order,
-        )
+        hidden_states = self.self_attn(hidden_states=hidden_states, edge_index=edge_index,
+            edge_hidden_states=edge_hidden_states, mem_mask=mem_mask, edge_mask=edge_mask, num_nodes=num_nodes,
+            node_order=node_order, edge_order=edge_order, past_key_value=past_key_value)
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -512,9 +478,9 @@ class MPLMSparseDecoderLayer(nn.Module):
         return hidden_states
 
     def forward_llm(self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None, past_key_value: Optional[Cache] = None,
-            output_attentions: Optional[bool] = False, use_cache: Optional[bool] = False,
-            cache_position: Optional[torch.LongTensor] = None, **kwargs, ) -> Tuple[
+                    position_ids: Optional[torch.LongTensor] = None, past_key_value: Optional[Cache] = None,
+                    output_attentions: Optional[bool] = False, use_cache: Optional[bool] = False,
+                    cache_position: Optional[torch.LongTensor] = None, **kwargs, ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -541,8 +507,12 @@ class MPLMSparseDecoderLayer(nn.Module):
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn.forward_llm(hidden_states=hidden_states,
-            attention_mask=attention_mask, position_ids=position_ids, past_key_value=past_key_value,
-            output_attentions=output_attentions, use_cache=use_cache, cache_position=cache_position, )
+                                                                                         attention_mask=attention_mask,
+                                                                                         position_ids=position_ids,
+                                                                                         past_key_value=past_key_value,
+                                                                                         output_attentions=output_attentions,
+                                                                                         use_cache=use_cache,
+                                                                                         cache_position=cache_position, )
         hidden_states = residual + hidden_states
 
         # Fully Connected

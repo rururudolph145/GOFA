@@ -225,6 +225,8 @@ class MPLMSparseLora(nn.Module):
 
             task_type="CAUSAL_LM",
 
+            target_modules=["gq_proj", "gk_proj", "gv_proj"]
+
         )
         return lora_config
 

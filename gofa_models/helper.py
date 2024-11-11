@@ -644,7 +644,6 @@ class MPLMHelper(torch.nn.Module):
     def __init__(self, transformer_args):
         super().__init__()
         model_args, training_args, gofa_args = transformer_args
-        print("mplmhelper")
         model = MPLMLora(model_args, training_args, gofa_args)  # restored llama2-7b-chat model
 
         self.model = model
@@ -973,6 +972,9 @@ class MPLMSparseHelper(torch.nn.Module):
             prompt_mask.append([True] * len(prompt_output_id))
             prompt_masked_mask.append(([True] * prompt_masked_mask_loc + [False] * (len(prompt_output_id) - prompt_masked_mask_loc)))
 
+
+        # print(self.model.tokenizer.batch_decode(prompt_output_ids_full))
+
         prompt_output = self.model.tokenizer.pad({"input_ids":prompt_output_ids_full, "attention_mask": prompt_mask}, padding=True, return_tensors="pt")
 
         output_masked = self.model.tokenizer.pad({"input_ids":prompt_output_ids_full, "attention_mask": prompt_masked_mask}, padding=True, return_tensors="pt")
@@ -981,6 +983,8 @@ class MPLMSparseHelper(torch.nn.Module):
 
         node_token_count = token_count[:graph.num_node_feat]
         edge_token_count = token_count[graph.num_node_feat:][graph.edge_map]
+
+        max_edge_token_count = edge_token_count.max()
 
         edge_order = torch.zeros(len(graph.edge_index[0]), device=graph.edge_index.device, dtype=torch.long)
 
@@ -998,6 +1002,7 @@ class MPLMSparseHelper(torch.nn.Module):
             node_order.append(tc[-1:])
         graph.edge_order = edge_order
         graph.node_order = torch.cat(node_order)
+        graph.max_edge_token = max_edge_token_count
 
         prompt_answer_ids = prompt_output["input_ids"].to(cur_device)
 
