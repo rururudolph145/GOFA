@@ -293,8 +293,22 @@ def scene_graph_prompt(data, task_class, **kwargs):
     graph_description = task_class.dataset.graph_description
     # directly use the initial prompt, mainly for supervised fine-tuning
     data.question = graph_description + question
-    # data.question = graph_description + 'Here is the question for this graph: ' + question +' Some entities are mentioned in the question. Please find the name of these entities. Please give the ID of the node which contains the entities content.'
-    # data.question = graph_description + 'Here is the question for this graph: ' + question + ' Some entities are mentioned in the question. Please find the name of these entities. Please give the ID of the node which contains the entities content and output the content of these nodes.'
-    # data.question = graph_description + ' Please first find question related nodes in the graph and output the nodeid then answer the question based on the node content. ' + question
-    # data.question = graph_description + ' Please first find question related nodes in the graph then answer the question based on the node content. ' + question
     return data
+
+
+def protein_hs_prompt(data, task_class, instruction=True, **kwargs):
+    question = data.question
+    graph_description = task_class.dataset.graph_description
+    if instruction:
+        instruction_prompt = (f"You are a biomedical expert tasked with determining whether two given proteins "
+                              f"[NODE_INDEX {data.target_index[0].item()}] and [NODE_INDEX {data.target_index[1].item()}] "
+                              f"have positive interaction. Typically, proteins that are involved in the same biological"
+                              f" pathway or process tend to interact positively. Proteins that has small shortest path "
+                              f"distance between each other tend to interact. Proteins that have many common interactions "
+                              f"tend to interact with each other. Typically, positive interaction are rare, answer yes only"
+                              f" if you are very certain.")
+    else:
+        instruction_prompt = ""
+    data.question = graph_description + instruction_prompt + question
+    return data
+

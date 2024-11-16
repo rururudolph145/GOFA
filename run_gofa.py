@@ -43,6 +43,9 @@ def main(params):
                                save_dir=params.exp_dir, offline=params.offline_log, )
     print("available devices: ", torch.cuda.device_count())
     checkpoint_dir = os.path.join(params.exp_dir, params.log_project)
+    if params.ckpt_save_path is not None:
+        date = params.exp_dir.split("/")[-1]
+        params.ckpt_save_path = params.ckpt_save_path+"/" + date
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
@@ -68,87 +71,38 @@ def main(params):
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
-        # task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
-        #               "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
-        task_names = ["arxiv"]
-        save_names = ["pretrain_0"]
+        task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
+                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
+
+        save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"]
+
         filter_func = data_size_filter
+        save_names = [name + str(params.last_epochs + 1) for name in save_names]
+        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names,
+                                             fast_data_load=True, filter_func=filter_func)
 
-        # save_names = ["pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
-        #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_",
-        #               "pretrain_", "pretrain_IR_kc_", "pertrain_IR_ck_", "pretrain_"]
+        val_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path,
+                                            split="val", sample_size=100, save_name="pretrain_val", pretrain_tasks=["CS", "CN", "SP"],
+                                            num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
 
-        # save_names = [name + str(params.last_epochs) for name in save_names]
-        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True, from_saved=True, filter_func=filter_func)
-
-        # val_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["pretrain_IR_ck_0"], pretrain_tasks=['IR'], content_to_key=False, from_saved=False, save_data=False,
-        #                                     split="val", sample_size=20, filter_func=filter_func)
-        #
-        # test_tasks = GOFAPretrainTaskWrapper(["fb15k237"], root=params.data_root_path, save_name=["test_fb_IR"], pretrain_tasks=['IR'], from_saved=False, save_data=True,
-        #                                     split="test", sample_size=100, filter_func=filter_func)
-
-        # Test pretrain perplexity ["cora", "wikics", "products"]
-        # val_tasks = GOFAPretrainTaskWrapper(["cora", "wikics", "products"], root=params.data_root_path, split="all", sample_size=3000,
-        #                                      pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
-        #                                      num_additional_sentences=0,
-        #                                      single_node_cs=True)
-        # val_tasks = GOFAPretrainTaskWrapper(["wikics"], root=params.data_root_path, split="all",
-        #                                     sample_size=1000,
-        #                                     pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
-        #                                     num_additional_sentences=0)
-
-        # test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="all", sample_size=3000,
-        #                                      pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False, num_additional_sentences=0,
-        #                                      single_node_cs=True)
-
-        # Test pretrain spd
-        # val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path, save_name=["pretrain_0"], pretrain_tasks=['IR'], content_to_key=True, from_saved=True, save_data=False,
-        #                                     split="val", sample_size=10, filter_func=filter_func)
-        # val_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=200,
-        #                                     pretrain_tasks=["SP"], num_workers=params.num_workers,
-        #                                     num_SP=3, from_saved=False, save_data=False, SP_from_targets=True)
-        #
-        # test_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=200,
-        #                                      pretrain_tasks=["SP"], num_workers=params.num_workers,
-        #                                      num_SP=3, from_saved=False, save_data=False, SP_from_targets=True)
-
-        # test cs examples
-        val_tasks = GOFAPretrainTaskWrapper(["wikics"], root=params.data_root_path, split="all",
-                                            sample_size=300, pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
-                                            num_additional_sentences=0)
-        # val_tasks = GOFAPretrainTaskWrapper(["wiki_graph"], root=params.data_root_path, split="all",
-        #                                     sample_size=300, pretrain_tasks=["SP"], num_workers=params.num_workers,
-        #                                     from_saved=False,
-        #                                     num_SP=1)
-        test_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path, split="all",
-                                            sample_size=300, pretrain_tasks=["CS"], num_workers=params.num_workers,
-                                            from_saved=True,
-                                            num_additional_sentences=0)
-
-        # breakpoint()
+        test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path,
+                                            split="test", sample_size=100, save_name="pretrain_test", pretrain_tasks=["CS", "CN", "SP"],
+                                            num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
 
-        # val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-        #                         state_name="val", metric="text_mse", classes=32132,
-        #                         meta_data={"eval_func": sentence_base})]
-        # test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-        #                           state_name="test", metric="text_mse", classes=32132,
-        #                           meta_data={"eval_func": sentence_base})]
-
         val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                  state_name="val", metric="perp", classes=32132,
-                                  meta_data={"eval_func": sentence_perplexity})]
+                                state_name="val", metric="perp", classes=32132,
+                                meta_data={"eval_func": sentence_perplexity})]
 
         test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
                                  state_name="test", metric="perp", classes=32132,
                                  meta_data={"eval_func": sentence_perplexity})]
-
-        # evlter = [Evaluator("text_mse"), Evaluator("text_mse")]
         evlter = []
-
 
 
     else:
@@ -178,8 +132,9 @@ def main(params):
                                             num_workers=params.num_workers,
                                             instruction=params.instructs,
                                             selection=params.selections,
-                                            from_saved=False,
-                                            save_data=True)
+                                            save_data=True,
+                                            from_saved=True,
+                                            fast_data_load=True,)
 
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
@@ -188,13 +143,12 @@ def main(params):
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=1,
+                                            sample_size=20,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection,
-                                            from_saved=False,
-                                            save_data=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selection=selection, save_data=False,
+                                            from_saved=False,) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
 
@@ -203,20 +157,18 @@ def main(params):
                                             split="test",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=inf_sample_size,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection,
-                                            from_saved=False,
-                                            save_data=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selection=selection, save_data=False,
+                                            from_saved=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
-
-        # breakpoint()
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
+
 
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
         val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
@@ -268,8 +220,6 @@ def main(params):
                 evlter.append(MeanMetric())
             elif dt.metric == "mae":
                 evlter.append(MeanAbsoluteError())
-            elif dt.metric == 'mse':
-                evlter.append(MeanSquaredError())
             elif dt.metric == "perp":
                 evlter.append(Perplexity(ignore_index=model.llm_model.model.tokenizer.pad_token_id))
             else:
@@ -303,7 +253,7 @@ def main(params):
                                           reload_freq=1, test_rep=params.test_rep, val_interval=params.val_interval,
                                           grad_clipping=params.grad_clip, grad_acc_step=params.grad_acc_step,
                                           save_time=timedelta(hours=params.save_model["time"]), cktp_prefix="best_ckpt",
-                                          precision=params.training_precision, top_k=params.save_model["top_k"], ckpt_path=params.ckpt_path, save_last=params.save_model["last"])
+                                          precision=params.training_precision, top_k=params.save_model["top_k"], ckpt_path=params.ckpt_path, save_last=params.save_model["last"], ckpt_save_path=params.ckpt_save_path)
     if params.last_save:
         model.save_partial(os.path.join(params.exp_dir, "best_ckpt.pth"))
 
