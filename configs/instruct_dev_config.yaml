@@ -2,7 +2,8 @@ run_mode: "ft"
 load_model: True
 data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
 #load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_3.pth"
-load_dir: "./saved_exp/2024-10-29_20:31:21.789656_782/best_ckpt.pth"
+load_dir: "/project/tantra/jerry.kong/repo/GOFA/saved_exp/2024-09-25_16:50:05.461317_145/best_ckpt.pth"
+#load_dir: "/project/tantra/jerry.kong/repo/GOFA/saved_exp/2024-11-13_13:40:44.105523_556/last_epoch_ckpt.pth"
 grad_acc_step: 16
 last_epochs: 0
 num_epochs: 0
@@ -12,54 +13,55 @@ lr: 0.00001
 l2: 0.0
 selections: True
 llm_max_length: 512
-mlp_type: llama
-gnn_type: cp
-num_layers: 3
+mlp_type: gp
+gnn_type: index
+num_layers: 6
 gating: True
-interleave: False
+interleave: True
 val_interval:
 
 train_task_names:
 #  - mag240m
 #  - wikikg90m
 #  - arxiv_link
-#  - arxiv
+  - arxiv
 #  - pubmed_link
-  - scene_graph
+#  - scene_graph
 
 sample_size_per_task:
 #  - 100000
 #  - 100000
 #  - 50000
 #  - 200000
-  - 50000
+  - 10000
 hops:
 #  - 3
 #  - 3
 #  - 3
 #  - 3
-  - -1
+  - 3
 
 train_max_nodes_per_hops:
 #  - 5
 #  - 5
 #  - 5
 #  - 5
-  - -1
+  - 5
 ways: 10
 instructs: True
 
 eval_task_names:
-#  - cora_node
+  - cora_node
 #  - cora_link
 #  - wikics
 #  - products
 #  - expla_graph
 #  - fb15k237
-  - scene_graph
+#  - scene_graph
+#  - protein_hs
 inf_sample_size_per_task:
-#  - 200
-#  - 200
+  - 200
+  - 200
 #  - 200
   - 200
 #  - 1.0
@@ -70,32 +72,32 @@ inf_sample_size_per_task:
 #  - 15000
 #  - 15000
 inf_hops:
-#  - 3
-#  - 3
+  - 3
+  - 1
 #  - -1
-#  - 3
+  - 1
 #  - 2
 #  - 3
 #  - 3
-  - -1
+#  - -1
 #  - 3
 #  - -1
 
 inf_max_nodes_per_hops:
-#  - 10
+  - 10
 #  - -1
-#  - 10
-#  - 10
+#  - 20
+#  - 20
 #  - 10
 #  - 3
 #  - 10
 #  - 10
-  - -1
+#  - -1
 #  - 10
 #  - -1
 
 inf_ways:
-#  - 7
+  - 10
 #  - 2
 #  - -1
 #  - 10
@@ -104,15 +106,15 @@ inf_ways:
 #  - -1
 #  - 2
 #  - 10
-  - -1
+#  - -1
 
 inf_instructs:
 #  - True
 #  - True
 #  - True
 #  - True
-#  - True
-#  - True
+  - True
+  - True
   - True
 
 inf_selections:
@@ -120,8 +122,8 @@ inf_selections:
 #  - True
 #  - True
 #  - True
-#  - True
-#  - True
+  - True
+  - True
   - True
 
-dec_lora: False
+dec_lora: True

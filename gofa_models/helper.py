@@ -1003,12 +1003,15 @@ class MPLMSparseHelper(torch.nn.Module):
         graph.edge_order = edge_order
         graph.node_order = torch.cat(node_order)
         graph.max_edge_token = max_edge_token_count
+        att_mask = output_masked["attention_mask"].to(cur_device)
+        mem_mask = att_mask[:graph.num_node_feat]
+        edge_mask = att_mask[graph.num_node_feat:][:, :graph.max_edge_token]
 
         prompt_answer_ids = prompt_output["input_ids"].to(cur_device)
 
         prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(prompt_answer_ids)
 
-        output_emb = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, partial_grad=True, map_node=True, mem_mask=output_masked["attention_mask"].to(cur_device), use_cache=False).logits
+        output_emb = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, partial_grad=True, map_node=True, mem_mask=mem_mask, edge_mask=edge_mask, use_cache=False).logits
 
         final_mask = torch.logical_xor(prompt_output["attention_mask"], output_masked["attention_mask"])
         # print(self.model.tokenizer.decode(prompt_output["input_ids"].to(cur_device)[final_mask.to(torch.bool)]))
@@ -1022,15 +1025,6 @@ class MPLMSparseHelper(torch.nn.Module):
         return self(data, input, prompt)
 
     def generate(self, data, graph=None, target_index=None):
-        # data = ["My name is jason derulo", "What is your name? Answer: ", "Question:"]
-        # target_index = torch.tensor([1])
-        # node_map = torch.tensor([0, 1])
-        # edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-        # edge_map = torch.tensor([0], dtype=torch.long)
-        # graph.edge_index = edge_index.to("cuda")
-        # graph.edge_map = edge_map.to("cuda")
-        # graph.node_map = node_map.to("cuda")
-        # graph.num_node_feat = 2
         target_index = target_index.to("cpu")
         target_set = set(target_index.numpy())
         cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
@@ -1042,68 +1036,33 @@ class MPLMSparseHelper(torch.nn.Module):
             for i, p in enumerate(prompt_output_full)]
         prompt_mask = [[True] * len(p) for p in prompt_output_ids_full]
 
-        prompt_output = self.model.left_tokenizer.pad({"input_ids": prompt_output_ids_full, "attention_mask": prompt_mask},
+        prompt_output = self.model.tokenizer.pad({"input_ids": prompt_output_ids_full, "attention_mask": prompt_mask},
                                                  padding=True, return_tensors="pt")
 
-        mapped_node_feature = prompt_output["attention_mask"][:graph.num_node_feat][graph.node_map.cpu()]
-        mapped_edge_feature = prompt_output["attention_mask"][graph.num_node_feat:]
-        mapped_feature = torch.cat([mapped_node_feature, mapped_edge_feature], dim=0)
+        token_count = prompt_output["attention_mask"].sum(dim=-1).to(graph.edge_map.device)
 
-        max_seq_length = mapped_feature.size()[-1]
+        node_token_count = token_count[:graph.num_node_feat]
+        edge_token_count = token_count[graph.num_node_feat:][graph.edge_map]
 
-        pseudo_edge_index = torch.stack([graph.edge_index[0], graph.edge_map+len(graph.node_map), graph.edge_index[1]], dim=0).cpu()
+        max_edge_token_count = edge_token_count.max()
 
-        max_token = 0
+        edge_order = torch.zeros(len(graph.edge_index[0]), device=graph.edge_index.device, dtype=torch.long)
 
-        row_extracts = []
-        col_extracts = []
-        mask_extracts = []
-        causal_masks = []
+        node_order = []
 
         for i in range(len(graph.node_map)):
-            neighbor_node_and_edge = pseudo_edge_index[:2, pseudo_edge_index[2] == i].T.reshape(-1)
-            mp_node_mask = mapped_feature[neighbor_node_and_edge]
-            center_mask = mapped_feature[i:i + 1]
-            all_mask = torch.cat([mp_node_mask, center_mask], dim=0)
-            neighbor_node_and_edge = torch.cat([neighbor_node_and_edge, torch.tensor([i])])
-            individual_sizes = all_mask.sum(dim=-1)
-            all_sizes = all_mask.sum()
-            center_size = center_mask.sum()
-            mask_extracts.append(all_sizes)
-            max_token = max(max_token, all_sizes)
-            row_extract = neighbor_node_and_edge.view(-1).repeat_interleave(individual_sizes)
-            col_extract = all_mask.nonzero()[:, 1]
-            row_extracts.append(row_extract)
-            col_extracts.append(col_extract)
-            causal_masks.append(mplm_4d_causal_inverse(max_seq_length, all_sizes, center_size))
-
-        for i in range(len(graph.node_map), len(mapped_feature)):
-            center_mask = mapped_feature[i:i + 1]
-            center_size = center_mask.sum()
-            max_token = max(center_size, max_token)
-            row_extract = torch.zeros((center_size,), dtype=torch.long) + i
-            col_extract = torch.arange(max_seq_length - center_size, max_seq_length)
-            row_extracts.append(row_extract)
-            col_extracts.append(col_extract)
-            mask_extracts.append(center_size)
-            causal_masks.append(mplm_4d_causal_inverse(max_seq_length, center_size, center_size))
-        for i in range(len(row_extracts)):
-            row_extract = torch.zeros((max_token,), dtype=torch.long)
-            row_extract[max_token - len(row_extracts[i]):] = row_extracts[i]
-            row_extracts[i] = row_extract
-            col_extract = torch.zeros((max_token,), dtype=torch.long)
-            col_extract[max_token - len(col_extracts[i]):] = col_extracts[i]
-            col_extracts[i] = col_extract
-            mask_extract = torch.zeros((max_token,), dtype=torch.bool)
-            mask_extract[max_token - mask_extracts[i]:] = 1
-            mask_extracts[i] = mask_extract
-            causal_mask = torch.full((max_seq_length, max_token), torch.finfo(torch.float32).min)
-            causal_mask[:, max_token - causal_masks[i].size()[1]:] = causal_masks[i]
-            causal_masks[i] = causal_mask
-
-        col_extracts = torch.stack(col_extracts)
-        row_extracts = torch.stack(row_extracts)
-        extract_att_mask = torch.stack(causal_masks)
+            s_target = (graph.edge_index[1] == i)
+            s_node = graph.edge_index[0][s_target]
+            nc = node_token_count[s_node]
+            ec = edge_token_count[s_target]
+            tc = nc + ec
+            tc = torch.cat([torch.tensor([0], device=tc.device), tc[:-1]])
+            tc = torch.cumsum(tc, dim=0)
+            edge_order[s_target] = tc
+            node_order.append(tc[-1:])
+        graph.edge_order = edge_order
+        graph.node_order = torch.cat(node_order)
+        graph.max_edge_token = max_edge_token_count
 
         prompt_answer_ids = prompt_output["input_ids"].to(cur_device)
 
@@ -1118,36 +1077,36 @@ class MPLMSparseHelper(torch.nn.Module):
         att_mask = prompt_output["attention_mask"].to(cur_device)
 
         generate_text = []
+        mem_mask = att_mask[:graph.num_node_feat]
+        edge_mask = att_mask[graph.num_node_feat:][:, :graph.max_edge_token]
         for i in range(128):
             if i == 0:
                 out = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, partial_grad=True, attention_mask=att_mask,
-                                             map_node=True, extracts=(
-                    row_extracts.to(cur_device), col_extracts.to(cur_device)), extract_attention_mask=extract_att_mask.to(cur_device), use_cache=True)
-                logits = out.logits[target_index, -1, :32000]
-                past_key_values = ()
-                for i, past_val in enumerate(out.past_key_values):
-                    if i < self.model.icae.get_base_model().model.n_layers:
-                        past_key_values += ((past_val[0][:graph.num_node_feat][graph.node_map.cpu()][target_index], past_val[1][:graph.num_node_feat][graph.node_map.cpu()][target_index]),)
-                    else:
-                        past_key_values += ((past_val[0][:len(graph.node_map)][target_index], past_val[1][:len(graph.node_map)][target_index]),)
-                att_mask = att_mask[:graph.num_node_feat][graph.node_map.cpu()][target_index]
-                extract_att_mask = extract_att_mask[:len(graph.node_map)][target_index]
+                                             map_node=True, mem_mask=mem_mask, use_cache=True, edge_mask=edge_mask)
+                logits = out.logits[:graph.num_node_feat, :, :32000][torch.arange(graph.num_node_feat), node_token_count-1]
+                past_key_values = out.past_key_values
+                past_key_values.remove_edge(graph.num_node_feat)
+                att_mask = att_mask[:graph.num_node_feat][graph.node_map.cpu()]
             else:
-                out = self.model.icae(inputs_embeds=prompt_answer_embs, use_cache=True, past_key_values=past_key_values, attention_mask=att_mask, extract_attention_mask=extract_att_mask.to(cur_device))
+                position_ids = att_mask.clone().to(torch.long)
+                position_ids[:, 0] = 0
+                position_ids = torch.cumsum(position_ids, dim=-1)[:, -1:]
+                out = self.model.icae(inputs_embeds=prompt_answer_embs, graph=graph, use_cache=True, past_key_values=past_key_values, attention_mask=att_mask, map_node=True, mem_mask=mem_mask, edge_mask=edge_mask, partial_grad=True, position_ids=position_ids)
                 logits = out.logits[:, -1, :32000]
                 past_key_values = out.past_key_values
 
             next_token_id = torch.argmax(logits, dim=-1, keepdim=True)
 
-            eos_reached = torch.logical_or(eos_reached, (next_token_id == self.model.tokenizer.eos_token_id).view(-1))
+            eos_reached = torch.logical_or(eos_reached, (next_token_id[target_index] == self.model.tokenizer.eos_token_id).view(-1))
 
             prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(next_token_id).to(prompt_answer_embs.device)
 
             generate_text.append(next_token_id.view(-1, 1))
-            att_mask = torch.cat(
-                [att_mask, torch.ones((len(att_mask), 1), dtype=att_mask.dtype, device=att_mask.device)], dim=-1)
-            extract_att_mask = extract_att_mask[:,-1:]
-            extract_att_mask = torch.cat([extract_att_mask, torch.full((len(extract_att_mask),1), 0).unsqueeze(-1)], dim=-1)
+
+            add_att_mask = torch.zeros((len(att_mask), 1), dtype=att_mask.dtype, device=att_mask.device)
+            add_att_mask[target_index] = 1
+            att_mask = torch.cat([att_mask, add_att_mask], dim=-1)
+            mem_mask = torch.cat([mem_mask, add_att_mask], dim=-1)
 
             if torch.all(eos_reached):
                 break
@@ -1156,6 +1115,7 @@ class MPLMSparseHelper(torch.nn.Module):
         generate_text[generate_text >= 32000] = 1
 
         generated_text = self.model.tokenizer.batch_decode(generate_text)
+        generated_text = [generated_text[i] for i in target_index]
 
         return generated_text
 

@@ -316,6 +316,7 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id[masks], answer=answer_texts)
 
     def mplm_gen(self, g):
+        g = add_self_loop(g)
         g.num_node_feat = g.x.shape[0]
         if g.edge_attr is not None:
             node_text = g.x[g.node_map.cpu().numpy()]
@@ -441,7 +442,7 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "" for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else p for p in prompt_texts]
         emb = emb[g.question_index]
         answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_input_texts)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
@@ -452,7 +453,7 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else "" for p in prompt_texts]
+        prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p=="") else p for p in prompt_texts]
         emb = emb[g.question_index]
         generated_text = self.llm_model.generate(emb, prompt=prompt_input_texts)
         for i, txt in enumerate(generated_text):
@@ -507,6 +508,7 @@ class GOFA(torch.nn.Module):
         try:
             self.llm_model.model.icae.get_base_model().model.g_layers.load_state_dict(new_state_dict, strict=False)
         except AttributeError:
+            print("bad")
             pass
         self.load_state_dict(new_state_dict, strict=False)
 

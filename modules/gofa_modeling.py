@@ -16,7 +16,7 @@ from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRMSNor
     logger, BaseModelOutputWithPast, Cache, DynamicCache, _prepare_4d_causal_attention_mask_for_sdpa, \
     _prepare_4d_causal_attention_mask, CausalLMOutputWithPast, LlamaForCausalLM
 from .gnn import GOFAGNNConv, GOFAGNNConvFullAtt, GOFAGNNConvCMB, GOFAGNNConvMLP, GOFADecoderLayer
-from .mplm import MPLMDecoderLayer, MPLMSparseDecoderLayer
+from .mplm import MPLMDecoderLayer, MPLMSparseDecoderLayer, GOFACache
 from transformers import MistralConfig
 from transformers.models.mistral.modeling_mistral import MistralAttention, MistralRMSNorm, MistralModel, MistralDecoderLayer, MistralForCausalLM
 
@@ -1360,7 +1360,7 @@ class MPLMSparseModel(MistralModel):
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.g_layers = nn.ModuleList()
-        self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(config, i) for i in range(gofa_config.num_layers)]))
+        self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(config, i+len(self.layers)- gofa_config.num_layers) for i in range(gofa_config.num_layers)]))
         self.g_layers.append(MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps))
         self.mem_token = gofa_config.mem_token
         self.llama_dtype = gofa_config.llama_dtype
@@ -1397,6 +1397,7 @@ class MPLMSparseModel(MistralModel):
             return_dict: Optional[bool] = None,
             graph=None,
             mem_mask=None,
+            edge_mask=None,
             partial_grad=None,
             map_node=None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
@@ -1425,9 +1426,8 @@ class MPLMSparseModel(MistralModel):
 
         past_key_values_length = 0
         if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+            if past_key_values is None:
+                past_key_values = GOFACache()
             past_key_values_length = past_key_values.get_usable_length(seq_length)
 
         if position_ids is None:
@@ -1485,45 +1485,43 @@ class MPLMSparseModel(MistralModel):
             if g_layer_idx == 0 and map_node:
                 hidden_states = torch.cat(
                     [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]], dim=0)
-                node_mask = mem_mask[:cur_node_size][graph.node_map]
-                edge_mask = mem_mask[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                node_mask = mem_mask[graph.node_map]
+                edge_mask = edge_mask[graph.edge_map]
                 attention_mask = torch.cat(
                     [attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
                 cur_node_size = len(graph.node_map)
-            if g_layer_idx >= 0 and not past_key_state and graph is not None:
+            if g_layer_idx >= 0 and graph is not None:
                 gnn_input = hidden_states[:cur_node_size]
-                gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                if past_key_values is None:
+                    gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                elif past_key_values.get_edge_states(i) is None:
+                    gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                else:
+                    gnn_edge_input = hidden_states[cur_node_size:]
 
-                graph_output = self.g_layers[0][g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input, mem_mask=node_mask, edge_mask=edge_mask, num_nodes=graph.num_nodes, node_order=graph.node_order, edge_order=graph.edge_order)
-                # print(graph_output.size())
-                # print(graph_output)
-                # graph_output = self.g_layers[2][g_layer_idx](output)
-                # graph_output = torch.cat([output, hidden_states[cur_node_size:]], dim=0)
-                # gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
-                # gnn_output[mem_mask] = output.view(-1, output.size()[-1])
-                # hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
+                graph_output = self.g_layers[0][g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input, mem_mask=node_mask, edge_mask=edge_mask, num_nodes=graph.num_nodes, node_order=graph.node_order, edge_order=graph.edge_order, past_key_value=past_key_values)
             else:
                 graph_output = None
             if g_layer_idx < 0 and partial_grad:
                 with torch.no_grad():
                     layer_outputs = self.forward_llm_layer(hidden_states, self.llama_dtype, decoder_layer, attention_mask, position_ids, past_key_values, output_attentions, use_cache)
-            else:
+            elif len(hidden_states) > cur_node_size:
                 layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:],
                                                                           attention_mask=attention_mask[cur_node_size:],
                                                                           position_ids=position_ids,
-                                                                          past_key_value=past_key_values,
                                                                           output_attentions=output_attentions,
                                                                           use_cache=use_cache, )
+            else:
+                layer_outputs = (None, None)
                 # layer_outputs = decoder_layer(hidden_states[cur_node_size:], attention_mask=attention_mask[cur_node_size:], position_ids=position_ids,
                 #                               past_key_value=past_key_values, output_attentions=output_attentions,
                 #                               use_cache=use_cache, )
 
             hidden_states = layer_outputs[0]
-            if graph_output is not None:
+            if graph_output is not None and hidden_states is not None:
                 hidden_states = torch.cat([graph_output, hidden_states], dim=0)
-
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            elif hidden_states is None:
+                hidden_states = graph_output
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
@@ -1538,7 +1536,7 @@ class MPLMSparseModel(MistralModel):
 
         next_cache = None
         if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+            next_cache = past_key_values
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
@@ -1586,6 +1584,7 @@ class MPLMSparseForCausalLM(MistralForCausalLM):
         return_dict: Optional[bool] = None,
         graph = None,
         mem_mask = None,
+        edge_mask = None,
         partial_grad = None,
         map_node = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
@@ -1635,6 +1634,7 @@ class MPLMSparseForCausalLM(MistralForCausalLM):
             mem_mask=mem_mask,
             partial_grad=partial_grad,
             map_node=map_node,
+            edge_mask=edge_mask,
         )
 
         hidden_states = outputs[0]

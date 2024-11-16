@@ -228,6 +228,43 @@ def apply_rotary_pos_emb_single_2d(q, cos, sin, position_ids, unsqueeze_dim=1):
     return q_embed
 
 
+class GOFACache:
+    def __init__(self):
+        self.key_cache: List[torch.Tensor] = []
+        self.value_cache: List[torch.Tensor] = []
+        self.edge_cache = {}
+
+    def update(self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int, cache=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        if len(self.key_cache) <= layer_idx:
+            self.key_cache.append(key_states)
+            self.value_cache.append(value_states)
+        else:
+            self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=-2)
+            self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=-2)
+
+        return self.key_cache[layer_idx], self.value_cache[layer_idx]
+
+    def get_usable_length(self, seq_len, layer_idx: Optional[int] = 0) -> int:
+        """Returns the sequence length of the cached states. A layer index can be optionally passed."""
+        # TODO: deprecate this function in favor of `cache_position`
+        if len(self.key_cache) <= layer_idx:
+            return 0
+        return self.key_cache[layer_idx].shape[-2]
+
+    def get_edge_states(self, layer_index):
+        if layer_index not in self.edge_cache:
+            return None
+        return self.edge_cache[layer_index]
+
+    def update_edge_states(self, key_cache, value_cache, layer_index):
+        self.edge_cache[layer_index] = (key_cache, value_cache)
+
+    def remove_edge(self, n_node):
+        for i in range(len(self.key_cache) - len(self.edge_cache)):
+            self.key_cache[i] = self.key_cache[i][:n_node]
+            self.value_cache[i] = self.value_cache[i][:n_node]
+
+
 class MPLMSparseAttention(MessagePassing):
     """
     Multi-headed attention from 'Attention Is All You Need' paper. Modified to use sliding window attention: Longformer
@@ -338,7 +375,7 @@ class MPLMSparseAttention(MessagePassing):
         key_states = self.gk_proj(hidden_states)
         value_states = self.gv_proj(hidden_states)
 
-        if edge_hidden_states is not None:
+        if past_key_value is None or past_key_value.get_edge_states(self.layer_idx) is None:
             edge_key_states = self.gk_proj(edge_hidden_states)
             edge_value_states = self.gv_proj(edge_hidden_states)
         else:
@@ -358,40 +395,64 @@ class MPLMSparseAttention(MessagePassing):
                 ptr: OptTensor, size_i: Optional[int], mem_mask_j, edge_mask, num_nodes, node_order_i, edge_order,
                 past_key_value) -> Tensor:
         bsz, q_len, dim = query_i.size()
-        _, k_len, _ = edge_key.size()
         query_states = query_i
 
-        query_pos_ids = torch.ones((bsz, q_len), device=query_states.device, dtype=torch.long)
-        query_pos_ids[:, 0] = node_order_i
+        n_max_token_size = mem_mask_j.size()[-1]
+        e_max_token_size = edge_mask.size()[-1]
+
+        past_q_len = 0
+        if past_key_value is not None:
+            past_q_len += past_key_value.get_usable_length(q_len, self.layer_idx)
+
+        query_pos_ids = mem_mask_j.clone().to(torch.long)
+        query_pos_ids[:, 0] += node_order_i - 1
         query_pos_ids = torch.cumsum(query_pos_ids, dim=-1)
+        query_pos_ids = query_pos_ids[:, past_q_len:]
         qmax_pos_ids = query_pos_ids.max() + 1
+
+        # TODO: This cause problem when there are multiple generation point in generation mode, fine in training.
         overall_mask = torch.cat([mem_mask_j, edge_mask], dim=-1)
 
         key_pos_ids = overall_mask.clone().to(torch.long)
 
-        key_pos_ids[:, 0] = edge_order
+        key_pos_ids[:, 0] += edge_order - 1
         key_pos_ids = torch.cumsum(key_pos_ids, dim=-1)
         kmax_pos_ids = key_pos_ids.max() + 1
-
+        key_node_pos_ids, key_edge_pos_ids = key_pos_ids[:, : n_max_token_size], key_pos_ids[:, n_max_token_size:]
+        key_node_pos_ids = key_node_pos_ids[:, past_q_len:]
         overall_mask = torch.stack([overall_mask] * q_len, dim=1)
-        overall_mask[-num_nodes:, :, q_len:] = 0
+        overall_mask[-num_nodes:, :, n_max_token_size:] = 0
         overall_mask = torch.logical_not(overall_mask) * torch.finfo(torch.float32).min
-        mask = torch.full((q_len, q_len), torch.finfo(torch.float32).min, device=overall_mask.device)
+        mask = torch.full((q_len + past_q_len, q_len + past_q_len), torch.finfo(torch.float32).min, device=overall_mask.device)
         mask_cond = torch.arange(mask.size(-1), device=mask.device)
         mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
-        overall_mask[-num_nodes:, :, :q_len] += mask
-        key_states = torch.cat([key_j, edge_key], dim=1)
-        value_states = torch.cat([value_j, edge_value], dim=1)
+        overall_mask[-num_nodes:, :, :q_len + past_q_len] += mask[-q_len:,]
+
+        # key_states = torch.cat([key_j, edge_key], dim=1)
+        # value_states = torch.cat([value_j, edge_value], dim=1)
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len + k_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len + k_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        key_states = key_j.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_j.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         cos_q, sin_q = self.rotary_emb(value_states, seq_len=qmax_pos_ids)
         cos_k, sin_k = self.rotary_emb(value_states, seq_len=kmax_pos_ids)
         query_states = apply_rotary_pos_emb_single(query_states, cos_q, sin_q, query_pos_ids)
-        key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k, key_pos_ids)
-        # key_states = key_states.unsqueeze(0).view(self.num_key_value_heads, bsz, 2* q_len, self.head_dim).permute(
-        # 1, 0, 2, 3)
+        key_states = apply_rotary_pos_emb_single(key_states, cos_k, sin_k, key_node_pos_ids)
+
+        if past_key_value is not None:
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx)
+
+        if past_key_value is None or past_key_value.get_edge_states(self.layer_idx) is None:
+            key_edge_states = edge_key.view(bsz, e_max_token_size, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            value_edge_states = edge_value.view(bsz, e_max_token_size, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            key_edge_states = apply_rotary_pos_emb_single(key_edge_states, cos_k, sin_k, key_edge_pos_ids)
+            if past_key_value is not None:
+                past_key_value.update_edge_states(key_edge_states, value_edge_states, self.layer_idx)
+        else:
+            key_edge_states, value_edge_states = past_key_value.get_edge_states(self.layer_idx)
+        key_states = torch.cat([key_states, key_edge_states], dim=-2)
+        value_states = torch.cat([value_states, value_edge_states], dim=-2)
+
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -400,18 +461,17 @@ class MPLMSparseAttention(MessagePassing):
         # overall_mask = torch.logical_not(overall_mask) * torch.finfo(torch.float32).min
         alpha += overall_mask.unsqueeze(1)
 
-        softmax_ind = index.repeat_interleave(q_len + k_len)
+        softmax_ind = index.repeat_interleave(past_q_len + q_len + e_max_token_size)
 
         alpha = alpha.permute(1, 0, 3, 2).reshape(self.num_heads, -1, q_len)
 
-        if alpha.size() != (self.num_heads, (q_len + k_len) * bsz, q_len):
+        if alpha.size() != (self.num_heads, (past_q_len + q_len + e_max_token_size) * bsz, q_len):
             raise ValueError(f"`alpha` should be of size {(self.num_heads, q_len * 2 * bsz, q_len)}, but is"
                              f" {alpha.size()}")
 
         alpha = softmax(alpha, softmax_ind, num_nodes=size_i, dim=1)
         alpha = F.dropout(alpha, p=self.attention_dropout, training=self.training)
-        alpha = alpha.view(self.num_heads, bsz, q_len + k_len, q_len).permute(1, 0, 3, 2)
-
+        alpha = alpha.view(self.num_heads, bsz, past_q_len + q_len + e_max_token_size, q_len).permute(1, 0, 3, 2)
         out = alpha @ value_states
         out = out.transpose(1, 2).contiguous()
         out = out.reshape(bsz, q_len, self.hidden_size)
@@ -436,9 +496,7 @@ class MPLMSparseDecoderLayer(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, edge_index: torch.Tensor, edge_hidden_states: torch.Tensor,
             mem_mask=None, edge_mask=None, num_nodes=None, node_order=None, edge_order=None,
-            attention_mask: Optional[torch.Tensor] = None, position_ids: Optional[torch.LongTensor] = None,
-            past_key_value: Optional[Cache] = None, output_attentions: Optional[bool] = False,
-            use_cache: Optional[bool] = False, cache_position: Optional[torch.LongTensor] = None, **kwargs, ):
+            past_key_value: Optional[Cache] = None, use_cache: Optional[bool] = False, **kwargs, ):
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
