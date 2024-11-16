@@ -1,0 +1,132 @@
+num_epochs: 1
+exp_name: "m_ft"
+train_sample_size: -1
+eval_sample_size: -1
+rwpe:
+task_names:
+  - arxiv
+llm_name: "icae"
+base_llm: "mistral7blora"
+llm_max_length: 4000
+llm_b_size: 1
+val_interval:
+load_texts: True
+mode: "nographft"
+temp: 0.1
+compressed_layer: 32
+max_nodes_per_hop: 5
+grad_acc_step: 4
+save_model:
+  save: False
+  steps:
+  monitor: False
+  time: 5
+  epochs:
+  top_k: -1
+  last: True
+load_dir: "./best_ckpt.pth"
+load_model: False
+last_save: False
+training_precision: "bf16-mixed"
+ckpt_path:
+run_mode: "ft"
+dec_lora: False
+node_text: False
+
+train_data_multiples: 1.0
+selections:
+  - True
+  - True
+  - True
+
+train_task_names:
+  - arxiv
+  - arxiv_link
+  - pubmed_node
+sample_size_per_task:
+  - 80
+  - 40
+  - 10
+hops:
+  - 3
+  - 3
+  - 3
+
+train_max_nodes_per_hops:
+  - 5
+  - 5
+  - 5
+ways:
+  - 10
+  - 10
+  - 10
+save_suffix: "llm_instruct_ft"
+instructs:
+  - False
+  - False
+  - False
+
+
+eval_task_names:
+  - products
+#  - products
+#  - expla_graph
+#  - fb15k237
+inf_sample_size_per_task:
+#  - 1.0
+#  - 10000
+#  - 1.0
+#  - 1.0
+#  - 10000
+#  - 1.0
+#  - 1.0
+#  - 10000
+  - 1.0
+  - 2000
+  - 1.0
+  - 2000
+inf_hops:
+  - 3
+  - 3
+  - -1
+  - 3
+#  - -1
+#  - 3
+#  - -1
+
+inf_max_nodes_per_hops:
+  - 10
+  - 10
+  - -1
+  - 10
+#  - -1
+#  - 10
+#  - -1
+
+inf_ways:
+  - -1
+  - 10
+  - -1
+  - 10
+#  - 2
+#  - 10
+#  - -1
+
+inf_instructs:
+  - False
+  - False
+  - False
+  - False
+#  - False
+#  - False
+#  - False
+
+inf_selections:
+  - True
+  - True
+  - True
+  - True
+#  - True
+#  - True
+#  - True
+

@@ -8,14 +8,16 @@ mode: autoencodergen
 #load_dir: "/project/tantra/liuhao/GOFA/ckpts/scene_sup_3eps.pth"
 #load_dir: "/project/tantra/liuhao/OFAv2/saved_exp/2024-09-16\ 14:35:20.152122_576/best_ckpt.pth"
 #load_dir: "/storage1/yinjie.tang/Active/jerry.kong/gofa_exp/saved_exp/2024-09-22_15:44:58.908349_300/best_ckpt.pth"
-load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_2.pth"
+#load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_3.pth"
+load_dir: "/project/tantra/jerry.kong/repo/GOFA/saved_exp/2024-09-25_16:50:05.461317_145/best_ckpt.pth"
+#load_dir: "/project/tantra/liuhao/OFAv2/saved_exp/2024-11-15_00:47:54.604035_122/best_ckpt.pth"
 base_llm: "mistral7b"
 load_model: True
 last_save: False
 batch_size: 1
 
 sample_size_per_task: 100
-llm_max_length: 1024
+llm_max_length: 512
 train_data_multiples: 1.0
 train_task_names:
   - cora_node
@@ -27,14 +29,14 @@ selections: True
 
 
 eval_task_names:
-  - scene_graph
-inf_sample_size_per_task: 250
+  - cora_node
+inf_sample_size_per_task: 500
 inf_hops:
-  - 3
+  - 1
 
 
 inf_max_nodes_per_hops:
-  - -1
+  - 0
 
 inf_ways:
   - -1

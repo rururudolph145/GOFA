@@ -17,7 +17,7 @@ from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity, MeanSquaredError
-from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
+from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity, mistral_binary_auc)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS import get_evaluators
@@ -88,29 +88,42 @@ def main(params):
         #                                     split="test", sample_size=100, filter_func=filter_func)
 
         # Test pretrain perplexity ["cora", "wikics", "products"]
-        val_tasks = GOFAPretrainTaskWrapper(["cora", "wikics", "products"], root=params.data_root_path, split="all", sample_size=3000,
-                                             pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
-                                             num_additional_sentences=0,
-                                             single_node_cs=True)
+        # val_tasks = GOFAPretrainTaskWrapper(["cora", "wikics", "products"], root=params.data_root_path, split="all", sample_size=3000,
+        #                                      pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
+        #                                      num_additional_sentences=0,
+        #                                      single_node_cs=True)
         # val_tasks = GOFAPretrainTaskWrapper(["wikics"], root=params.data_root_path, split="all",
         #                                     sample_size=1000,
         #                                     pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
         #                                     num_additional_sentences=0)
 
-        test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="all", sample_size=3000,
-                                             pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False, num_additional_sentences=0,
-                                             single_node_cs=True)
+        # test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="all", sample_size=3000,
+        #                                      pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False, num_additional_sentences=0,
+        #                                      single_node_cs=True)
 
         # Test pretrain spd
         # val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path, save_name=["pretrain_0"], pretrain_tasks=['IR'], content_to_key=True, from_saved=True, save_data=False,
         #                                     split="val", sample_size=10, filter_func=filter_func)
-        # val_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=2000,
-        #                                     pretrain_tasks=["CN"], num_workers=params.num_workers,
-        #                                     num_SP=3, from_saved=False, save_data=False, SP_from_targets=False)
+        # val_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=200,
+        #                                     pretrain_tasks=["SP"], num_workers=params.num_workers,
+        #                                     num_SP=3, from_saved=False, save_data=False, SP_from_targets=True)
         #
-        # test_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=2000,
-        #                                      pretrain_tasks=["CN"], num_workers=params.num_workers,
+        # test_tasks = GOFAPretrainTaskWrapper(["cora", "products"], root=params.data_root_path, split="all", sample_size=200,
+        #                                      pretrain_tasks=["SP"], num_workers=params.num_workers,
         #                                      num_SP=3, from_saved=False, save_data=False, SP_from_targets=True)
+
+        # test cs examples
+        val_tasks = GOFAPretrainTaskWrapper(["wikics"], root=params.data_root_path, split="all",
+                                            sample_size=300, pretrain_tasks=["CS"], num_workers=params.num_workers, from_saved=False,
+                                            num_additional_sentences=0)
+        # val_tasks = GOFAPretrainTaskWrapper(["wiki_graph"], root=params.data_root_path, split="all",
+        #                                     sample_size=300, pretrain_tasks=["SP"], num_workers=params.num_workers,
+        #                                     from_saved=False,
+        #                                     num_SP=1)
+        test_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path, split="all",
+                                            sample_size=300, pretrain_tasks=["CS"], num_workers=params.num_workers,
+                                            from_saved=True,
+                                            num_additional_sentences=0)
 
         # breakpoint()
 
@@ -175,7 +188,7 @@ def main(params):
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=1,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
@@ -204,7 +217,6 @@ def main(params):
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
-
 
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
         val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,

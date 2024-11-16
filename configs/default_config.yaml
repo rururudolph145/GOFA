@@ -32,7 +32,7 @@ llm_name: "icae"
 base_llm: "mistral7b"
 llm_max_length: 128
 llm_b_size: 1
-val_interval: 1
+val_interval:
 load_texts: True
 mode: "autoencoder"
 temp: 0.1

@@ -1,9 +1,10 @@
 data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
 #load_dir: "/project/tantra/jerry.kong/repo/GOFA/saved_exp/2024-09-16_02:25:46.419638_003/best_ckpt.pth"
 #load_dir: "/project/tantra/jerry.kong/repo/GOFA/more.pth"
-load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_2.pth"
+load_dir: "/storage1/yinjie.tang/Active/feng.jiarui/GOFA/cache_data/best_ckpt_3.pth"
 load_model: True
 ckpt_path:
 last_epochs: 0
 num_epochs: 0
-mode: "autoencodergen"
+mode: "autoencoder"
+exp_name: "gofa_sn"
