@@ -17,11 +17,12 @@ from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
-from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
+from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity, mistral_binary_auc)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS.data import TAGData
 from TAGLAS import get_evaluators
+from TAGLAS.evaluation.interface import Evaluator
 import torch
 from types import SimpleNamespace
 from functools import partial
@@ -46,6 +47,8 @@ def main(params):
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
         num_layers=params.num_layers)
     model_args.dec_lora = params.dec_lora
+    model_args.llama_pretrain_checkpoint = params.llama_pretrain_checkpoint
+    model_args.mistral_pretrain_checkpoint = params.mistral_pretrain_checkpoint
     training_args.model_max_length = params.llm_max_length
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
@@ -57,15 +60,37 @@ def main(params):
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
+        task_names = ["mag240m", "arxiv", "pubmed_node", "wiki_graph", "wikikg90m"]
 
-        train_task = GOFAPretrainTaskWrapper(["mag240m", "ultrachat200k", "wiki_graph", "wikikg90m"],
-                                             root=params.data_root_path, save_name=f"pretrain_{params.last_epochs}", fast_data_load=True, single_node_cs=True)
-        # train_task = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-        #                                     split="train", save_suffixs=["llm_arxiv_train"], add_prompt_graph=False, left_keep_length=128)
-        val_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="val", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
-        test_tasks = GOFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
-                                          split="test", num_workers=params.num_workers, add_prompt_graph=False, left_keep_length=128)
+        save_names = ["pretrain_0"] * 5
+
+        train_task = GOFAPretrainTaskWrapper(["arxiv"],
+                                             root=params.data_root_path, save_name=f"pretrain_0", fast_data_load=True, single_node_cs=True)
+        # train_task = GOFAPretrainTaskWrapper(["mag240m", "mag240m", "mag240m"], root=params.data_root_path,
+        #                                     save_name=["pretrain_0", "pretrain_1", "pretrain_2"], fast_data_load=True, single_node_cs=True, from_saved=True)
+        # train_task = GOFAPretrainTaskWrapper(["mag240m"], root=params.data_root_path,
+        #                                      save_name=["pretrain_0"], fast_data_load=True,
+        #                                      single_node_cs=True, from_saved=True)
+        # train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names, fast_data_load=True, single_node_cs=True)
+        val_tasks = GOFAPretrainTaskWrapper(["cora", "wikics", "products"], root=params.data_root_path, sample_size=3000,
+                                          split="all", num_workers=params.num_workers, single_node_cs=True, from_saved=False)
+        test_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path,sample_size=3000,
+                                          split="all", num_workers=params.num_workers, single_node_cs=True)
+        # val_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path,
+        #                                     sample_size=1000,
+        #                                     split="all", num_workers=params.num_workers, single_node_cs=True,
+        #                                     from_saved=False)
+        # test_tasks = GOFAPretrainTaskWrapper(["products"], root=params.data_root_path, sample_size=1000,
+        #                                      split="all", num_workers=params.num_workers, single_node_cs=True, from_saved=False)
+
+        # test spd
+        # val_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path, split="all", sample_size=100,
+        #                                     pretrain_tasks=["SP"], num_workers=params.num_workers,
+        #                                     num_SP=1, from_saved=False, save_data=False, SP_from_targets=False)
+        #
+        # test_tasks = GOFAPretrainTaskWrapper(["cora"], root=params.data_root_path, split="all", sample_size=100,
+        #                                      pretrain_tasks=["SP"], num_workers=params.num_workers,
+        #                                      num_SP=1, from_saved=False, save_data=False, SP_from_targets=True)
 
         # breakpoint()
 
@@ -80,7 +105,15 @@ def main(params):
         test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
                                  state_name="test", metric="perp", classes=32132,
                                  meta_data={"eval_func": sentence_perplexity})]
+
+        # val_tasks = [DataWithMeta(val_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name="val", metric="text_mse", classes=32132,
+        #                         meta_data={"eval_func": sentence_base})]
+        # test_tasks = [DataWithMeta(test_tasks, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                           state_name="test", metric="text_mse", classes=32132,
+        #                           meta_data={"eval_func": sentence_base})]
         evlter = []
+        # evlter = [Evaluator("text_mse"), Evaluator("text_mse")]
 
 
     else:
@@ -119,7 +152,8 @@ def main(params):
                                             instruction=params.instructs,
                                             selection=params.selections,
                                             add_prompt_graph=False,
-                                            save_data=True)
+                                            save_data=False,
+                                            from_saved=False,)
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 
@@ -134,12 +168,16 @@ def main(params):
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             num_workers=params.num_workers,
+                                            sample_size=inf_sample_size,
                                             way=way,
                                             instruction=instruct,
                                             selection=selection,
-                                            add_prompt_graph=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            add_prompt_graph=False,
+                                            from_saved=False,
+                                            save_data=False,
+                                            ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         test_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
@@ -147,26 +185,44 @@ def main(params):
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             num_workers=params.num_workers,
+                                            sample_size=inf_sample_size,
                                             way=way,
                                             instruction=instruct,
                                             selection=selection,
-                                            add_prompt_graph=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            add_prompt_graph=False,
+                                            from_saved=False,
+                                            save_data=False,
+                                            ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
 
+        # TODO: For Protein
+        evlter = [AUROC(task="binary"), AUROC(task="binary")]
+        eval_metric_names = ["roc_auc"]
+
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
         val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name=task_name + "_val", metric=metric_name, classes=32132,
-                                meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, val_tasks, eval_metric_names)]
+                                  state_name=task_name + "_val", metric=metric_name, classes=32132,
+                                  meta_data={"eval_func": mistral_binary_auc}) for task_name, task, metric_name in
+                     zip(eval_tasks, val_tasks, eval_metric_names)]
 
         test_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name=task_name + "_test", metric=metric_name, classes=32132,
-                                meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, test_tasks, eval_metric_names)]
+                                   state_name=task_name + "_test", metric=metric_name, classes=32132,
+                                   meta_data={"eval_func": mistral_binary_auc}) for task_name, task, metric_name in
+                      zip(eval_tasks, test_tasks, eval_metric_names)]
 
+        # train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
+        # val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name=task_name + "_val", metric=metric_name, classes=32132,
+        #                         meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, val_tasks, eval_metric_names)]
+        #
+        # test_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name=task_name + "_test", metric=metric_name, classes=32132,
+        #                         meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, test_tasks, eval_metric_names)]
 
     text_dataset = {"train": train_task, "val": val_tasks, "test": test_tasks}
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
@@ -260,7 +316,6 @@ if __name__ == "__main__":
     if params.override is not None:
         override_config = load_yaml(params.override)
         configs.append(override_config)
-    # Add for few-shot parameters
 
     mod_params = combine_dict(*configs)
     mod_params = merge_mod(mod_params, params.opts)

@@ -16,11 +16,12 @@ from lightning_model import GraphTextPredLightning
 from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
-from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
-from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
+from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity, MeanSquaredError
+from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity, mistral_binary_auc)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS import get_evaluators
+from TAGLAS.evaluation.interface import Evaluator
 from TAGLAS.data import TAGData
 import torch
 from types import SimpleNamespace

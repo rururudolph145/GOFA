@@ -1,5 +1,8 @@
 root_path: ""
-data_root_path: "./TAGDataset"
+#data_root_path: "./TAGDataset"
+data_root_path: "/storage1/yinjie.tang/Active/feng.jiarui/TAGDataset"
+llama_pretrain_checkpoint: "../cache_data/cache_data/model/llama-2-7b-chat-finetuned-icae_zeroweight_llama2.pt"
+mistral_pretrain_checkpoint: "/project/tantra/liuhao/OFAv2/cache_data/model/mistral_7b_ft_icae.safetensors"
 num_bases: 4
 emb_dim: 1024
 num_layers: 6
@@ -9,7 +12,7 @@ JK: "last"
 lr: 0.0001
 l2: 0.1
 grad_clip: 0.5
-num_epochs: 1
+num_epochs: 0
 last_epochs: 0
 batch_size: 1
 eval_batch_size: 1
@@ -19,7 +22,7 @@ data_path:
 offline_log: False
 test_rep: 1
 log_project: "ggama"
-exp_name: "ggama"
+exp_name: "perp_3c"
 train_sample_size: -1
 eval_sample_size: -1
 rwpe:
@@ -37,7 +40,7 @@ compressed_layer: 32
 max_nodes_per_hop: 5
 grad_acc_step: 4
 save_model:
-  save: True
+  save: False
   steps:
   monitor: False
   time: 5

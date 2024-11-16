@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks.progress import TQDMProgressBar

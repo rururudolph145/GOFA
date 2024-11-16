@@ -1,7 +1,14 @@
 from collections import namedtuple, OrderedDict
+from xml.dom.minidom import Entity
 
 import torch
 import numpy as np
+import random
+
+from docutils.nodes import target
+from numpy.core.defchararray import startswith
+# from termcolor import cprint
+import re
 
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.layer.pyg import RGCNEdgeConv
@@ -37,6 +44,44 @@ def print_text_side_by_side(text_1, text_2, line_width=120, space=10):
         full_text = t1_cur_text + " "*space + t2_cur_text
         print(full_text)
 
+def find_one_hop_neighbors(edge_index, target_index):
+    source_nodes = edge_index[0]
+    destination_nodes = edge_index[1]
+    # Find all nodes that are connected to the target (incoming and outgoing edges)
+    one_hop_neighbors = np.unique(
+        np.concatenate([
+            source_nodes[destination_nodes == target_index],  # Incoming edges to target
+            destination_nodes[source_nodes == target_index]  # Outgoing edges from target
+        ])
+    )
+    return one_hop_neighbors
+
+def get_neighbor_text(g, target_index, truncate_len):
+    question_index = g.node_map[g.question_index.cpu().numpy()].cpu().numpy()
+    exl_index = target_index.tolist() + question_index.tolist()
+    neighbor_index = g.node_map[
+        ~np.isin(g.node_map.cpu().numpy(), exl_index)].cpu().numpy()
+    neighbor_texts = g.x[neighbor_index].tolist()
+    neighbor_texts = [' '.join(t.split()[:truncate_len]) for t in neighbor_texts]
+    return neighbor_texts
+
+def get_edge_text(g, edge_index, node_ids):
+    # filter the prompt edges
+    edge_index = g.edge_index.cpu().numpy()[:, :-2 * len(g.target_index) * len(g.question)]
+    for i in range(len(node_ids)):
+        cur_id = node_ids[i]
+        for t in g.x:
+            if cur_id in t:
+                cur_name = t[t.find('Name: ')+6:t.find(';')]
+                node_ids[i] = cur_name
+    edge_text = node_ids[edge_index]
+    edge_map = g.edge_map[:len(edge_index[0])].cpu().numpy()
+    for i in range(len(g.edge_attr)):
+        g.edge_attr[i] = ' is' + g.edge_attr[i][g.edge_attr[i].find(':')+1:] + ' '
+    new_edge_attr = g.edge_attr[edge_map]
+    edge_text = ', '.join(edge_text[0] + new_edge_attr + edge_text[1])
+    return edge_text + '. '
+
 
 
 class GOFA(torch.nn.Module):
@@ -60,7 +105,7 @@ class GOFA(torch.nn.Module):
             self.decode = self.auto_decode
         elif mode == "autoencodergen":
             self.encode = self.auto_encode
-            self.decode = self.generate
+            self.decode = self.auto_generate
         elif mode == "direct":
             self.encode = self.direct_decode
             self.decode = lambda x: x
@@ -68,19 +113,17 @@ class GOFA(torch.nn.Module):
             self.encode = self.llm_decode
             self.decode = lambda x: x
         elif mode == "nographft":
-            self.encode = self.llm_ft
-            self.decode = lambda x: x
+            self.encode = lambda x: x
+            self.decode = self.llm_ft
         elif mode == "nographgen":
-            self.encode = self.llm_gen
-            self.decode = lambda x: x
-        elif mode == "nographgentemp":
-            self.encode = self.llm_gen_scene_graph
-            self.decode = lambda x: x
+            self.encode = lambda x: x
+            self.decode = self.llm_gen_neighbor
         else:
             # TODO: not implemented
             raise NotImplementedError(mode + " mode not implemented")
 
     def llm_decode(self, g):
+        # For finetuning LLM using sentence completion task
         text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
         com_text_inputs = []
         for i in range(len(text_inputs)):
@@ -94,17 +137,17 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id, answer=answer_texts)
 
     def llm_ft(self, g):
-        text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
-        all_x = g.x[g.node_map.cpu().numpy()].tolist()
-        truncated_x = [t[:80] for t in all_x[1:]]
-        all_x = ' '.join(all_x[:1] + truncated_x)
+        truncate_len = 256
+        target_index = g.node_map[g.target_index.cpu().numpy()].cpu().numpy()
+        text_inputs = g.x[target_index].tolist()
+        text_inputs = [' '.join(t.split()[:truncate_len]) for t in
+                       text_inputs + ['These nodes have following neighbor nodes'] + get_neighbor_text(g, target_index, truncate_len) ]
+        text_inputs = '. '.join(text_inputs)
+        text_inputs += get_edge_text(g, g.edge_index.cpu().numpy(), g.node_ids[0])
+
         com_text_inputs = []
-        for i in range(len(text_inputs)):
-            # add edge text description
-            edge_t = g.node_ids[i][g.edge_index.cpu()[:,:-2]]
-            edge_t = ', '.join(edge_t[0] + ' connects to ' + edge_t[1])
-            t = all_x + '. ' + edge_t + '. ' + g.question[i]
-            # t = text_inputs[i] + g.question[i]
+        for i in range(len(g.question)):
+            t = text_inputs + g.question[i]
             com_text_inputs.append(t)
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
 
@@ -113,45 +156,26 @@ class GOFA(torch.nn.Module):
         return GNNLMOutput(logits=answer_logits[masks], pred_text=self.logit_to_text(answer_logits, masks),
                            answer_id=answer_id, answer=answer_texts)
 
-    def llm_gen_scene_graph(self, g):
-        text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
-        all_x = g.x[g.node_map.cpu().numpy()].tolist()
-        # truncated_x = [t[:t.find("(x,y,w,h)")] for t in all_x]
-        truncated_x = [t for t in all_x]
-        all_x = ' '.join(all_x[:1] + truncated_x)
+    def llm_gen_neighbor(self, g):
+        truncate_len = 512
+        target_index = g.node_map[g.target_index.cpu().numpy()].cpu().numpy()
+        text_inputs = g.x[target_index].tolist()
+        text_inputs = [' '.join(t.split()[:truncate_len]) for t in
+                       text_inputs + ['These nodes have following neighbor nodes'] + get_neighbor_text(g, target_index, truncate_len)]
+        text_inputs = '. '.join(text_inputs)
+        text_inputs += get_edge_text(g, g.edge_index.cpu().numpy(), g.node_ids[0])
+
         com_text_inputs = []
-        for i in range(len(text_inputs)):
-            edge_t = g.node_ids[i][g.edge_index.cpu()[:,:-2*len(g.node_map)]]
-            edge_t = ', '.join(edge_t[0] + ' connects to ' + edge_t[1])
-            # t = all_x + '. ' + edge_t + '. ' + g.question[i]
-            t = all_x + '. ' + '. ' + g.question[i]
-            t = '[INST]\n' + t + g.question[i] + '\n[/INST]\n\n'
-            com_text_inputs.append(t)
 
-        answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
-        generated_text = self.llm_model.generate(com_text_inputs)
-        for i, txt in enumerate(generated_text):
-            print_fixed_length(f"question: {com_text_inputs}")
-            print("-" * 120)
-            print_text_side_by_side("target: " + answer_texts[i], "gen: " + generated_text[i])
-            print("=" * 120)
-        GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
-        return GNNLMOutput(logits=torch.randn([1, 32132]), pred_text=generated_text, answer_id=torch.tensor([1]),
-                           answer=answer_texts)
-
-
-    def llm_gen(self, g):
-        text_inputs = g.x[g.node_map.cpu().numpy()][g.question_index.cpu().numpy()].tolist()
-        com_text_inputs = []
+        # TODO: current version only support len(g.question)==1
         for i in range(len(g.question)):
-            # t = '[INST]\n' + g.question[i] + '\n[/INST]\n\n'
-            if len(text_inputs) == len(g.question):
-                t = '[INST]\n' + text_inputs[i] + g.question[i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
-            elif len(text_inputs) == len(g.question) * 2:
-                t = '[INST]\n' + text_inputs[2*i] + text_inputs[2*i+1] + g.question[
-                    i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
-            elif len(text_inputs) > len(g.question):
-                t = '[INST]\n' + g.question[i] + 'Please only answer the category name, no other information or explanation. \n[/INST]\n\n'
+            if len(g.target_index) == len(g.question):
+                t = '[INST]\n' + text_inputs + g.question[i] + ' Please only strictly answer one category name, no other information or explanation. \n[/INST]\n\n'
+            elif len(g.target_index) == len(g.question) * 2:
+                t = '[INST]\n' + text_inputs + g.question[
+                    i] + ' Please only strictly answer yes or no, no other information or explanation. Do not add anything else. \n[/INST]\n\n'
+            elif len(g.target_index) > len(g.question):
+                t = '[INST]\n' + text_inputs + g.question[i] + ' Please directly answer the question, no other information or explanation. \n[/INST]\n\n'
             else:
                 raise ValueError('Text_input length did not match question length.')
             com_text_inputs.append(t)
@@ -180,18 +204,18 @@ class GOFA(torch.nn.Module):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_texts = ["" if p.startswith("Please complete the sentence of the node") else p for p in prompt_texts]
+        prompt_texts = ["" if p.startswith("Please complete the sentence") else p for p in prompt_texts]
         emb = emb[g.question_index]
         answer_logits, answer_id, masks = self.llm_model.decode(answer_texts, emb, prompt=prompt_texts)
         GNNLMOutput = namedtuple("GNNLMOutput", ["logits", "answer_id", "pred_text", "answer"])
-        return GNNLMOutput(logits=answer_logits[masks][:, :32000], pred_text=self.logit_to_text(answer_logits, masks),
+        return GNNLMOutput(logits=answer_logits[masks][:,:32000], pred_text=self.logit_to_text(answer_logits, masks),
                            answer_id=answer_id, answer=answer_texts)
 
-    def generate(self, g):
+    def auto_generate(self, g):
         emb = g.x
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
-        prompt_texts = ["" if p.startswith("Please complete the sentence of the node") else p for p in prompt_texts]
+        prompt_texts = ["" if p.startswith("Please complete the sentence") else p for p in prompt_texts]
         emb = emb[g.question_index]
         generated_text = self.llm_model.generate(emb, prompt=prompt_texts)
         for i, txt in enumerate(generated_text):
@@ -219,7 +243,10 @@ class GOFA(torch.nn.Module):
                            answer_id=answer_id, answer=answer_texts)
 
     def save_partial(self, save_dir):
-        state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
+        if self.mode.startswith('nograph'):
+            state_dict = OrderedDict()
+        else:
+            state_dict = self.llm_model.model.icae.model.model.g_layers.state_dict()
         full_state_dict = self.state_dict()
         for k in full_state_dict:
             if "default" in k:

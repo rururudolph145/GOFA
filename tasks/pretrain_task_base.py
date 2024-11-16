@@ -414,6 +414,7 @@ def single_node_graph_complete_sentence(data, **kwargs):
     data.question[0] = data.question[0].replace(f"[NODE_INDEX {target_index[0]}]", f"[NODE_INDEX 0]")
     data.question = data.question[[0]]
     data.question_map = torch.tensor([0], dtype=torch.long)
+    data.question = data.question[[0]]
     data.answer = data.answer[[0]]
     data.answer_map = torch.tensor([0], dtype=torch.long)
     data.label = data.label[[0]]

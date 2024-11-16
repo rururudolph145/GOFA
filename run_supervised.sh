@@ -1,1 +1,1 @@
-python run_gofa.py --override ./configs/supervised_dev_config.yaml
+python run_gofa.py --override ./configs/supervised_scene_graph_config.yaml
