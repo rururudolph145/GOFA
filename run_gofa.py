@@ -146,8 +146,8 @@ def main(params):
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selection=selection, save_data=True,
-                                            from_saved=True,) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selection=selection, save_data=False,
+                                            from_saved=False,) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
 
@@ -160,8 +160,8 @@ def main(params):
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selection=selection, save_data=True,
-                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
+                                            selection=selection, save_data=False,
+                                            from_saved=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
