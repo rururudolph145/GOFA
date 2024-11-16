@@ -17,7 +17,7 @@ from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
-from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
+from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity, mistral_binary_auc)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS.data import TAGData
@@ -151,6 +151,7 @@ def main(params):
                                             num_workers=params.num_workers,
                                             instruction=params.instructs,
                                             selection=params.selections,
+                                            add_prompt_graph=False,
                                             save_data=False,
                                             from_saved=False,)
 
@@ -161,20 +162,22 @@ def main(params):
         # test_tasks = [OFAPretrainTaskWrapper(["arxiv"], root=params.data_root_path,
         #                                   split="test", data_multiple=1000, k=1, num_workers=params.num_workers, csp_task=partial(CNTask, graph_text=True), from_saved=False)]
 
-        val_sample_size = 10
         val_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             num_workers=params.num_workers,
+                                            sample_size=inf_sample_size,
                                             way=way,
-                                            sample_size=val_sample_size,
                                             instruction=instruct,
                                             selection=selection,
-                                            from_saved=False) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            add_prompt_graph=False,
+                                            from_saved=False,
+                                            save_data=False,
+                                            ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         test_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
@@ -182,29 +185,44 @@ def main(params):
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
                                             num_workers=params.num_workers,
-                                            way=way,
                                             sample_size=inf_sample_size,
+                                            way=way,
                                             instruction=instruct,
                                             selection=selection,
-                                            from_saved=False,) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
+                                            add_prompt_graph=False,
+                                            from_saved=False,
+                                            save_data=False,
+                                            ) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
-
-        # breakpoint()
 
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
 
+        # TODO: For Protein
+        evlter = [AUROC(task="binary"), AUROC(task="binary")]
+        eval_metric_names = ["roc_auc"]
+
         train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
         val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name=task_name + "_val", metric=metric_name, classes=32132,
-                                meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, val_tasks, eval_metric_names)]
+                                  state_name=task_name + "_val", metric=metric_name, classes=32132,
+                                  meta_data={"eval_func": mistral_binary_auc}) for task_name, task, metric_name in
+                     zip(eval_tasks, val_tasks, eval_metric_names)]
 
         test_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
-                                state_name=task_name + "_test", metric=metric_name, classes=32132,
-                                meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, test_tasks, eval_metric_names)]
+                                   state_name=task_name + "_test", metric=metric_name, classes=32132,
+                                   meta_data={"eval_func": mistral_binary_auc}) for task_name, task, metric_name in
+                      zip(eval_tasks, test_tasks, eval_metric_names)]
 
+        # train_task = DataWithMeta(train_task, batch_size=params.batch_size, sample_size=params.train_sample_size)
+        # val_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name=task_name + "_val", metric=metric_name, classes=32132,
+        #                         meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, val_tasks, eval_metric_names)]
+        #
+        # test_tasks = [DataWithMeta(task, batch_size=params.batch_size, sample_size=params.eval_sample_size,
+        #                         state_name=task_name + "_test", metric=metric_name, classes=32132,
+        #                         meta_data={"eval_func": sentence_base}) for task_name, task, metric_name in zip(eval_tasks, test_tasks, eval_metric_names)]
 
     text_dataset = {"train": train_task, "val": val_tasks, "test": test_tasks}
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
@@ -298,7 +316,6 @@ if __name__ == "__main__":
     if params.override is not None:
         override_config = load_yaml(params.override)
         configs.append(override_config)
-    # Add for few-shot parameters
 
     mod_params = combine_dict(*configs)
     mod_params = merge_mod(mod_params, params.opts)

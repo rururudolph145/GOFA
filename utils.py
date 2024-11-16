@@ -278,3 +278,15 @@ def set_mask(data, name, index, dtype=torch.bool):
     mask = torch.zeros(data.num_nodes, dtype=dtype)
     mask[index] = True
     setattr(data, name, mask)
+
+def mistral_binary_auc(func, output, batch):
+    map_dict = {"yes": 1, 'no': 0, "Yes": 1, "No": 0}
+    uppercase = output.logits[0, [5592, 1770]]
+    # lowercase = output.logits[0, [5081, 708]]
+    pred = uppercase
+    pred = pred.exp()
+    pred = pred / torch.sum(pred, dim=-1)
+    pred = pred[[0]]
+    target = batch.label[batch.label_map.cpu().numpy()].tolist()
+    target = torch.tensor([map_dict[t] for t in target], dtype=torch.long, device=pred.device)
+    return func(pred, target)

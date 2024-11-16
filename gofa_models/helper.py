@@ -546,7 +546,7 @@ class LlamaHelper(torch.nn.Module):
 
     def forward(self, data, input, prompt=None):
         # print(self.model.training_args.model_max_length)
-        cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
+        cur_device = self.model.model.get_base_model().model.embed_tokens.weight.device
         prompt_output = self.model.tokenizer(data, add_special_tokens=False, padding=False, truncation=True,
                                        max_length=self.model.training_args.model_max_length)["input_ids"]
         input_tokens = self.model.tokenizer(input, add_special_tokens=False, padding=False, truncation=True,
@@ -567,9 +567,9 @@ class LlamaHelper(torch.nn.Module):
 
         target_mask = prompt_output["attention_mask"].to(cur_device).to(torch.bool)
 
-        prompt_answer_embs = self.model.icae.get_base_model().model.embed_tokens(prompt_answer_ids)
+        prompt_answer_embs = self.model.model.get_base_model().model.embed_tokens(prompt_answer_ids)
 
-        output_emb = self.model.icae(inputs_embeds=prompt_answer_embs).logits
+        output_emb = self.model.model(inputs_embeds=prompt_answer_embs).logits
         # for name, p in self.model.named_parameters():
         #     if "default" in name:
         #         print(p.abs().sum())
@@ -585,7 +585,7 @@ class LlamaHelper(torch.nn.Module):
         return self(data, input, prompt)
 
     def generate(self, input, prompt=None):
-        cur_device = self.model.icae.get_base_model().model.embed_tokens.weight.device
+        cur_device = self.model.model.get_base_model().model.embed_tokens.weight.device
         if prompt is None:
             prompt = [""] * len(input)
         prompt_ids = self.model.tokenizer(input, add_special_tokens=False, padding=False, truncation=True,
@@ -602,7 +602,7 @@ class LlamaHelper(torch.nn.Module):
         prompt_answer_ids = prompt_ids.to(device=cur_device, dtype=torch.long)
 
         with torch.no_grad():
-            outputs = self.model.icae.generate(prompt_answer_ids, max_length=self.model.training_args.model_max_length, num_return_sequences=1, pad_token_id = self.model.eos_id)
+            outputs = self.model.model.generate(prompt_answer_ids, max_length=self.model.training_args.model_max_length, num_return_sequences=1, pad_token_id = self.model.eos_id)
 
         generated_text = [self.model.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
         generated_text = [self.extract_content_after_inst(t) for t in generated_text]
