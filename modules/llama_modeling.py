@@ -193,14 +193,26 @@ class MPLMSparseLora(nn.Module):
         self.icae.model.embed_tokens.requires_grad_(False)
         self.eos_id = 1
         self.dim = self.icae.config.hidden_size
+        self.prepare_lora()
         # if self.quantization:
         #     self.icae = prepare_model_for_kbit_training(self.icae)
-        lora_config = self.create_lora_config()
-        # self.icae = get_peft_model(self.icae, lora_config)
         self.tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
         self.left_tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
         self.left_tokenizer.padding_side = "left"
         self.left_tokenizer.truncation_side = "left"
+
+    def prepare_lora(self):
+        if self.model_args.dec_lora:
+            lora_config = self.create_lora_config()
+            self.icae = get_peft_model(self.icae, lora_config)
+            self.icae.get_base_model().model.set_trainable_state(lora=True)
+        else:
+            self.icae.get_base_model().model.set_trainable_state(lora=False)
+        print(self.icae.get_base_model().model.g_layers.state_dict()['0.0.self_attn.gq_proj.base_layer.weight'])
+
+    def merge_lora(self):
+        self.icae = self.icae.merge_and_unload()
+        self.prepare_lora()
 
     def create_bnb_config(self):
         """
@@ -215,7 +227,7 @@ class MPLMSparseLora(nn.Module):
     def create_lora_config(self):
         lora_config = LoraConfig(
 
-            r=self.model_args.lora_r,
+            r=128,
 
             lora_alpha=32,
 

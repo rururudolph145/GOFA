@@ -939,6 +939,9 @@ class MPLMSparseHelper(torch.nn.Module):
     def get_tokenizer(self):
         return self.model.tokenizer
 
+    def merge_lora(self):
+        self.model.merge_lora()
+
     def train_mode(self):
         # for param in self.model.dec.parameters():
         #     param.requires_grad = False

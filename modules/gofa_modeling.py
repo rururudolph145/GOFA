@@ -1362,9 +1362,11 @@ class MPLMSparseModel(MistralModel):
         self.g_layers = nn.ModuleList()
         self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(config, i+len(self.layers)- gofa_config.num_layers) for i in range(gofa_config.num_layers)]))
         self.g_layers.append(MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps))
+        # self.g_layers.append(nn.ModuleList([nn.Linear(config.hidden_size, config.hidden_size) for i in range(gofa_config.num_layers)]))
         self.mem_token = gofa_config.mem_token
         self.llama_dtype = gofa_config.llama_dtype
         self.n_layers = gofa_config.num_layers
+        self.trainable_layer = gofa_config.trainable_layer
 
     def align_weight(self):
         n_layers = len(self.layers)
@@ -1381,8 +1383,23 @@ class MPLMSparseModel(MistralModel):
                 partial_state_dict[".".join(name_split)] = source_dict[layer_name]
 
         self.g_layers[0].load_state_dict(partial_state_dict)
-        self.g_layers[-1].load_state_dict(self.norm.state_dict())
+        self.g_layers[1].load_state_dict(self.norm.state_dict())
+        self.layers = self.layers[:inactive_layers]
+        # for layer in self.g_layers[2]:
+        #     layer.weight.data.copy_(torch.eye(len(layer.weight.data)))
+
+    def set_trainable_state(self, lora=False):
         self.layers.requires_grad_(False)
+        for i in range(len(self.g_layers[0]) - self.trainable_layer):
+            self.g_layers[0][i].requires_grad_(False)
+        # self.g_layers[2].requires_grad_(True)
+        # if lora:
+        #     for i in range(len(self.g_layers[0]) - self.trainable_layer, len(self.g_layers[0])):
+        #         for name, submodule in self.g_layers[0][i].named_modules():
+        #             if isinstance(submodule, MistralRMSNorm):
+        #                 for param in submodule.parameters():
+        #                     param.requires_grad = True
+        #     self.g_layers[1].requires_grad_(True)
 
     def forward(
             self,
@@ -1478,10 +1495,250 @@ class MPLMSparseModel(MistralModel):
 
 
         cur_node_size = graph.num_node_feat if graph is not None else 0
-        for i, decoder_layer in enumerate(self.layers):
+        for i in range(len(self.layers) + len(self.g_layers[0])):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            g_layer_idx = i - (len(self.layers) - self.n_layers)
+            g_layer_idx = i - len(self.layers)
+            if g_layer_idx < 0:
+                decoder_layer = self.layers[i]
+            if g_layer_idx == 0 and map_node:
+                hidden_states = torch.cat(
+                    [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]], dim=0)
+                node_mask = mem_mask[graph.node_map]
+                edge_mask = edge_mask[graph.edge_map]
+                attention_mask = torch.cat(
+                    [attention_mask[:cur_node_size][graph.node_map], attention_mask[cur_node_size:]], dim=0)
+                cur_node_size = len(graph.node_map)
+            if g_layer_idx >= 0 and graph is not None:
+                # hidden_states = self.g_layers[2][g_layer_idx](hidden_states)
+                gnn_input = hidden_states[:cur_node_size]
+                if past_key_values is None:
+                    gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                elif past_key_values.get_edge_states(i) is None:
+                    gnn_edge_input = hidden_states[cur_node_size:][:, :graph.max_edge_token][graph.edge_map]
+                else:
+                    gnn_edge_input = hidden_states[cur_node_size:]
+
+                graph_output = self.g_layers[0][g_layer_idx](gnn_input, graph.edge_index, gnn_edge_input, mem_mask=node_mask, edge_mask=edge_mask, num_nodes=graph.num_nodes, node_order=graph.node_order, edge_order=graph.edge_order, past_key_value=past_key_values)
+            else:
+                graph_output = None
+            if g_layer_idx < 0 and partial_grad:
+                with torch.no_grad():
+                    layer_outputs = self.forward_llm_layer(hidden_states, self.llama_dtype, decoder_layer, attention_mask, position_ids, past_key_values, output_attentions, use_cache)
+            elif len(hidden_states) > cur_node_size and (i < len(self.layers) + len(self.g_layers[0]) - self.trainable_layer):
+                with torch.no_grad():
+                    layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:],
+                                                                              attention_mask=attention_mask[
+                                                                                             cur_node_size:],
+                                                                              position_ids=position_ids,
+                                                                              output_attentions=output_attentions,
+                                                                              use_cache=use_cache, )
+            elif len(hidden_states) > cur_node_size:
+                layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:],
+                                                                          attention_mask=attention_mask[cur_node_size:],
+                                                                          position_ids=position_ids,
+                                                                          output_attentions=output_attentions,
+                                                                          use_cache=use_cache, )
+            else:
+                layer_outputs = (None, None)
+                # layer_outputs = decoder_layer(hidden_states[cur_node_size:], attention_mask=attention_mask[cur_node_size:], position_ids=position_ids,
+                #                               past_key_value=past_key_values, output_attentions=output_attentions,
+                #                               use_cache=use_cache, )
+
+            hidden_states = layer_outputs[0]
+            if graph_output is not None and hidden_states is not None:
+                hidden_states = torch.cat([graph_output, hidden_states], dim=0)
+            elif hidden_states is None:
+                hidden_states = graph_output
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+        if graph is not None:
+            hidden_states = self.g_layers[1](hidden_states)
+        else:
+            hidden_states = self.norm(hidden_states)
+
+            # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = None
+        if use_cache:
+            next_cache = past_key_values
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+    def forward_llm_layer(self, hidden_states, dtype, decoder_layer, attention_mask, position_ids, past_key_values, output_attentions, use_cache):
+        hidden_states = hidden_states.to(dtype)
+        if self.gradient_checkpointing and self.training:
+            layer_outputs = self._gradient_checkpointing_func(decoder_layer.__call__, hidden_states, attention_mask,
+                position_ids, past_key_values, output_attentions, use_cache, )
+        else:
+            layer_outputs = decoder_layer(hidden_states, attention_mask=attention_mask, position_ids=position_ids,
+                past_key_value=past_key_values, output_attentions=output_attentions, use_cache=use_cache, )
+
+        return layer_outputs
+
+class MPLMSparseAdaModel(MistralModel):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
+
+    Args:
+        config: LlamaConfig
+    """
+
+    def __init__(self, config: MistralConfig, gofa_config):
+        super().__init__(config)
+        self._use_sdpa = config._attn_implementation == "sdpa"
+        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
+        self.g_layers = nn.ModuleList()
+        self.g_layers.append(nn.ModuleList([MPLMSparseDecoderLayer(config, i+len(self.layers) - gofa_config.num_layers) for i in range(gofa_config.num_layers)]))
+        self.g_layers.append(MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps))
+        self.mem_token = gofa_config.mem_token
+        self.llama_dtype = gofa_config.llama_dtype
+        self.n_layers = gofa_config.num_layers
+        self.trainable_layer = gofa_config.trainable_layer
+
+    def align_weight(self):
+        n_layers = len(self.layers)
+        inactive_layers = n_layers - len(self.g_layers[0])
+        partial_state_dict = OrderedDict()
+        source_dict = self.layers.state_dict()
+        for layer_name in source_dict:
+            name_split = layer_name.split(".")
+            layer_ind = int(name_split[0])
+            if layer_ind >= inactive_layers:
+                name_split[0] = str(layer_ind - inactive_layers)
+                if name_split[2] in ["v_proj", "q_proj", "k_proj", "o_proj"]:
+                    name_split[2] = "g"+name_split[2]
+                partial_state_dict[".".join(name_split)] = source_dict[layer_name]
+
+        self.g_layers[0].load_state_dict(partial_state_dict)
+        self.g_layers[-1].load_state_dict(self.norm.state_dict())
+
+    def set_trainable_state(self, lora=False):
+        for i in range(len(self.g_layers[0]) - self.trainable_layer):
+            self.g_layers[0][i].requires_grad_(False)
+        for i in range(len(self.layers) - self.trainable_layer):
+            self.layers[i].requires_grad_(False)
+        if lora:
+            for i in range(len(self.g_layers[0]) - self.trainable_layer, len(self.g_layers[0])):
+                for name, submodule in self.g_layers[0][i].named_modules():
+                    if isinstance(submodule, MistralRMSNorm):
+                        for param in submodule.parameters():
+                            param.requires_grad = True
+            for i in range(len(self.layers) - self.trainable_layer, len(self.layers)):
+                for name, submodule in self.layers[i].named_modules():
+                    if isinstance(submodule, MistralRMSNorm):
+                        for param in submodule.parameters():
+                            param.requires_grad = True
+            self.g_layers[1].requires_grad_(True)
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            graph=None,
+            mem_mask=None,
+            edge_mask=None,
+            partial_grad=None,
+            map_node=None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        past_key_state = past_key_values is not None
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None:
+            raise ValueError("You cannot specify input_ids for GOFA, please construct input embeddings manually")
+
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length = input_ids.shape[:2]
+        elif inputs_embeds is not None:
+            batch_size, seq_length = inputs_embeds.shape[:2]
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        past_key_values_length = 0
+        if use_cache:
+            if past_key_values is None:
+                past_key_values = GOFACache()
+            past_key_values_length = past_key_values.get_usable_length(seq_length)
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0)
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if self._use_flash_attention_2:
+            # 2d mask is passed through the layers
+            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+        elif self._use_sdpa and not output_attentions:
+            # output_attentions=True can not be supported when using SDPA, and we fall back on
+            # the manual implementation that requires a 4D causal mask in all cases.
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+            )
+        else:
+            # 4d mask is passed through the layers
+            # attention_mask = _prepare_4d_causal_attention_mask(
+            #     attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length,
+            # )
+            attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length, sliding_window=self.config.sliding_window,
+            )
+
+        # embed positions
+        hidden_states = inputs_embeds
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = None
+
+
+        cur_node_size = graph.num_node_feat if graph is not None else 0
+        for i in range(len(self.layers)):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            g_layer_idx = i - (len(self.layers) - len(self.g_layers[0]))
+            decoder_layer = self.layers[i]
             if g_layer_idx == 0 and map_node:
                 hidden_states = torch.cat(
                     [hidden_states[:cur_node_size][graph.node_map], hidden_states[cur_node_size:]], dim=0)
@@ -1505,9 +1762,16 @@ class MPLMSparseModel(MistralModel):
             if g_layer_idx < 0 and partial_grad:
                 with torch.no_grad():
                     layer_outputs = self.forward_llm_layer(hidden_states, self.llama_dtype, decoder_layer, attention_mask, position_ids, past_key_values, output_attentions, use_cache)
+            elif len(hidden_states) > cur_node_size and (i < len(self.layers) + len(self.g_layers[0]) - self.trainable_layer):
+                with torch.no_grad():
+                    layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states,
+                                                                              attention_mask=attention_mask,
+                                                                              position_ids=position_ids,
+                                                                              output_attentions=output_attentions,
+                                                                              use_cache=use_cache, )
             elif len(hidden_states) > cur_node_size:
-                layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states[cur_node_size:],
-                                                                          attention_mask=attention_mask[cur_node_size:],
+                layer_outputs = self.g_layers[0][g_layer_idx].forward_llm(hidden_states,
+                                                                          attention_mask=attention_mask,
                                                                           position_ids=position_ids,
                                                                           output_attentions=output_attentions,
                                                                           use_cache=use_cache, )
@@ -1519,7 +1783,8 @@ class MPLMSparseModel(MistralModel):
 
             hidden_states = layer_outputs[0]
             if graph_output is not None and hidden_states is not None:
-                hidden_states = torch.cat([graph_output, hidden_states], dim=0)
+                node_hs = 0.5 * graph_output + 0.5 * hidden_states[:cur_node_size]
+                hidden_states = torch.cat([node_hs, hidden_states[cur_node_size:]], dim=0)
             elif hidden_states is None:
                 hidden_states = graph_output
 
@@ -1557,9 +1822,9 @@ class MPLMSparseModel(MistralModel):
 
         return layer_outputs
 
+
 class MPLMSparseForCausalLM(MistralForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
-    _keep_in_fp32_modules = ["g_layers"]
 
     def __init__(self, config, gofa_config):
         super(MistralForCausalLM, self).__init__(config)

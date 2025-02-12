@@ -14,6 +14,7 @@ from transformers.models.mistral.modeling_mistral import (MistralRotaryEmbedding
 from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaMLP, LlamaRotaryEmbedding, rotate_half, \
     apply_rotary_pos_emb
 from torch_geometric.utils import softmax, add_self_loops
+from torch_scatter import scatter_softmax, scatter
 
 import torch.nn.functional as F
 

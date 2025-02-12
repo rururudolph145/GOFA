@@ -50,6 +50,7 @@ class GraphTextPredLightning(BaseTemplate):
         pass
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        print("save pth model")
         self.model.save_partial(os.path.join(self.model.save_dir, "mem_ckpt.pth"))
         for k in list(checkpoint["state_dict"].keys()):
             if "g_layers" not in k:
@@ -57,6 +58,7 @@ class GraphTextPredLightning(BaseTemplate):
 
     def on_train_epoch_end(self):
         super().on_train_epoch_end()
+        print("save last epoch ckpt")
         self.model.save_partial(os.path.join(self.model.save_dir, "last_epoch_ckpt.pth"))
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):

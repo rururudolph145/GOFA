@@ -23,7 +23,7 @@ class GOFALlamaConfig(LlamaConfig):
 
 class GOFAMistralConfig(MistralConfig):
     def __init__(self, dim=4096, num_layers=6, mem_token=128, head=32, add_self_loops=True, dropout=0.0,
-                 llama_dtype=torch.float16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="rotary", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", **kwargs):
+                 llama_dtype=torch.bfloat16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="rotary", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", trainable_layer=5, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.mem_token = mem_token
@@ -40,4 +40,4 @@ class GOFAMistralConfig(MistralConfig):
         self.interleave = interleave
         self.gating = gating
         self.mp_att = mp_att
-        self.trainable_layer = 3
+        self.trainable_layer = trainable_layer

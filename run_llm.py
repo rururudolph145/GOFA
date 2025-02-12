@@ -8,6 +8,7 @@ import shutil
 import numpy as np
 from lightning.pytorch.loggers import WandbLogger
 from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+from lightning.pytorch.strategies import DDPStrategy
 
 from gp.utils.utils import (load_yaml, combine_dict, merge_mod, setup_exp, set_random_seed, )
 from gp.lightning.metric import (EvalKit, )
@@ -19,7 +20,7 @@ from gofa_models.model import GOFA
 from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
-from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
+from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity, NormalizedLossFactory)
 from gp.lightning.data_template import DataWithMeta
 from tasks import GOFAPretrainTaskWrapper, GOFAFineTuneTaskWrapper
 from TAGLAS.data import TAGData
@@ -28,6 +29,15 @@ import torch
 from types import SimpleNamespace
 from functools import partial
 
+
+def data_size_filter(data: TAGData, **kwargs):
+    estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(torch.unique(data.node_map)) + 0.1689 * len(
+        data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
+    if len(data.node_map) + len(torch.unique(data.edge_map)) < 60 and estimated_mem < 65 and len(
+            torch.unique(data.edge_map)) > 0 and len(torch.unique(data.node_map)) > 0:
+        return data
+    else:
+        return None
 
 def main(params):
     if params.base_llm.startswith('llama7b'):
@@ -46,6 +56,7 @@ def main(params):
     if params.ckpt_save_path is not None:
         date = params.exp_dir.split("/")[-1]
         params.ckpt_save_path = params.ckpt_save_path+"/" + date
+        os.mkdir(params.ckpt_save_path)
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
@@ -57,46 +68,48 @@ def main(params):
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
         gofa_args.llama_dtype = torch.bfloat16
+    elif params.training_precision == "16-mixed":
+        training_args.bf16 = False
+        gofa_args.llama_dtype = torch.float16
     gofa_args.gnn_mlp_type = params.mlp_type
+    gofa_args.trainable_layer = params.trainable_layers
 
-    def data_size_filter(data: TAGData, **kwargs):
-        estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
-            torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
-        if len(data.node_map) + len(torch.unique(data.edge_map)) < 40 and estimated_mem < 65:
-            return data
-        else:
-            return None
 
     if params.run_mode == "pretrain":
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
 
-        task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node",
-                      "pubmed_node", "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m",
-                      "ultrachat200k"][3:4]
+        # task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node",
+        #               "pubmed_node", "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m",
+        #               "ultrachat200k"]
+        #
+        # save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_",
+        #               "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_",
+        #               "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+        #               "pretrain_"]
+        task_names = ["wiki_dump_graph", "ultrachat200k"]
 
-        save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_",
-                      "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_",
-                      "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
-                      "pretrain_"][3:4]
+        save_names = ["pretrain_", "pretrain_"]
 
         filter_func = data_size_filter
         save_names = [name + str(params.last_epochs + 1) for name in save_names]
         train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names,
                                              fast_data_load=True, filter_func=filter_func)
-        val_tasks = train_task
-        test_tasks = train_task
 
-        # val_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="val", sample_size=100,
-        #                                     save_name="pretrain_val", pretrain_tasks=["CS", "CN", "SP"],
-        #                                     num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
-        #                                     num_CN=3)
-        #
-        # test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="test", sample_size=100,
-        #                                      save_name="pretrain_test", pretrain_tasks=["CS", "CN", "SP"],
-        #                                      num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
-        #                                      num_CN=3)
+        # val_tasks = train_task
+        # test_tasks = train_task
+
+        val_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="val", sample_size=200,
+                                            save_name="pretrain_val", pretrain_tasks=["CS", "CN", "SP"],
+                                            num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
+                                            num_CN=3)
+
+        test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path, split="test", sample_size=200,
+                                             save_name="pretrain_test", pretrain_tasks=["CS", "CN", "SP"],
+                                             num_workers=params.num_workers, num_additional_sentences=3, num_SP=3,
+                                             num_CN=3)
+        # train_task = val_tasks
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
 
@@ -196,14 +209,7 @@ def main(params):
     text_dataset = {"train": train_task, "val": val_tasks, "test": test_tasks}
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
 
-    model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm)
-    train_params = list(model.parameters())
-    # train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
-    optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
-    # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr*0.1)
-    lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
-    # lr_scheduler_config = None
+    model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm, save_dir=params.ckpt_save_path)
 
     eval_data = text_dataset["val"] + text_dataset["test"]
     val_state = [dt.state_name for dt in text_dataset["val"]]
@@ -212,7 +218,8 @@ def main(params):
     eval_metric = [dt.metric for dt in eval_data]
     eval_funcs = [dt.meta_data["eval_func"] for dt in eval_data]
     loss = torch.nn.CrossEntropyLoss()
-    loss_func = normalized_loss_factory(params.batch_size, training_args.model_max_length)
+    # loss_func = normalized_loss_factory(params.batch_size, training_args.model_max_length)
+    loss_func = NormalizedLossFactory(params.batch_size, training_args.model_max_length)
     if len(evlter) == 0:
         for dt in eval_data:
             if dt.metric == "acc":
@@ -237,10 +244,6 @@ def main(params):
     metrics = EvalKit(eval_metric, evlter, loss, eval_funcs, loss_func, eval_mode="max", exp_prefix="",
                       eval_state=eval_state, val_monitor_state=val_state[0], test_monitor_state=test_state[0], )
 
-    exp_config = ExpConfig("", optimizer, lr_scheduler=lr_scheduler_config)
-    exp_config.val_state_name = val_state
-    exp_config.test_state_name = test_state
-    pred_model = GraphTextPredLightning(exp_config, model, metrics)
     if params.load_model:
         print("-"*60+"LOADING"+"-"*60)
         if os.path.isdir(params.load_dir):
@@ -250,11 +253,28 @@ def main(params):
             for s in state_dict:
                 if s.startswith(prefix):
                     partial_dict[s[len(prefix):]] = state_dict[s]
-            model.load_partial(state_dict=partial_dict)
+            model.load_partial(state_dict=partial_dict, merge_lora=params.merge_lora)
         else:
-            model.load_partial(load_dir=params.load_dir)
+            model.load_partial(load_dir=params.load_dir, merge_lora=params.merge_lora)
+    train_params = []
+    for name, param in model.named_parameters():
+        # print(name)
+        # print(param)
+        if param.requires_grad:
+            train_params.append(param)  # print(name, param.requires_grad)
+    # train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
+    optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
+    # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr * 1)
+    lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
+    # lr_scheduler_config = None
+    exp_config = ExpConfig("", optimizer, lr_scheduler=lr_scheduler_config)
+    exp_config.val_state_name = val_state
+    exp_config.test_state_name = test_state
+    pred_model = GraphTextPredLightning(exp_config, model, metrics)
 
     strategy = "deepspeed_stage_2" if torch.cuda.device_count() > 1 else "auto"
+    # strategy = "ddp_spawn"
     if params.run_mode == "inf":
         val_res, test_res = lightning_test(wandb_logger, pred_model, params.datamodule, metrics, strategy=strategy)
     else:
