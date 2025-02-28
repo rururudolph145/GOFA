@@ -11,10 +11,14 @@ from collections import OrderedDict
 from safetensors.torch import load_file
 from modules.utils import safe_download_hf_file
 
+###################################################################
+#                 Configurations                                  #
+###################################################################
+
 
 class GOFAMistralConfig(MistralConfig):
     def __init__(self, dim=4096, num_layers=5, mem_token=128, head=32, add_self_loops=True, dropout=0.0,
-                 llama_dtype=torch.bfloat16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="rotary", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", trainable_layer=5, fuse_type="interleave", **kwargs):
+                 llama_dtype=torch.float16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="rotary", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", trainable_layer=5, fuse_type="interleave", **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.mem_token = mem_token
@@ -49,6 +53,7 @@ class ModelArguments:
 class TrainingArguments:
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
+    bf16: bool = field(default=False)
     model_max_length: int = field(default=512,
         metadata={"help": "Maximum sequence length per node. Sequences will be right padded (and possibly truncated)."}, )
     fixed_mem_size: int = field(default=128, metadata={"help": "Enalbing the fixed mem size."}, )
@@ -60,6 +65,11 @@ class TrainingArguments:
         metadata={"help": "Add a special token for the prompt of language modeling; default: False"}, )
     restore_from: str = field(default="",
         metadata={"help": "The checkpoint that should be restored from for fine-tuning"})
+
+
+###################################################################
+#                 Model                                           #
+###################################################################
 
 
 class GOFAMistral(torch.nn.Module):
@@ -100,11 +110,14 @@ class GOFAMistral(torch.nn.Module):
 
     def load_pretrained(self, pretrained_path=None):
         if pretrained_path is None:
-            pretrained_path = safe_download_hf_file("WFRaain/GOFA", "gofa_pretrained.pth", self.model_args.checkpoint_dir,
+            pretrained_path = safe_download_hf_file("WFRaain/GOFA", "mem_ckpt.pth", self.model_args.checkpoint_dir,
                                         repo_type=None)
         self.load_partial(pretrained_path)
 
     def save_partial(self, save_dir):
+        """
+        Save the GNN and lora weight (if available).
+        """
         state_dict = self.model.icae.get_base_model().model.g_layers.state_dict()
         full_state_dict = self.state_dict()
         for k in full_state_dict:
@@ -113,13 +126,18 @@ class GOFAMistral(torch.nn.Module):
         torch.save(state_dict, save_dir)
 
     def load_partial(self, load_dir):
+        """
+        Load the GNN and lora weight (if available).
+        """
         state_dict = torch.load(load_dir, map_location="cpu")
         missing_keys, _ = self.model.icae.get_base_model().model.g_layers.load_state_dict(state_dict, strict=False)
         print("GNN module is missing the following keys:", missing_keys)
         missing_keys, _ = self.load_state_dict(state_dict, strict=False)
-        print("GOFA is missing the following keys:", missing_keys)
 
     def forward(self, g):
+        """
+        Encode the graph and generate logits for answer tokens.
+        """
         g.num_node_feat = g.x.shape[0]
         if hasattr(g, "edge_attr") and g.edge_attr is not None:
             text_inputs = np.concatenate([g.x, g.edge_attr], axis=0)
@@ -132,13 +150,17 @@ class GOFAMistral(torch.nn.Module):
             raise ValueError("Forward stage graph should contain answer.")
         answer_texts = g.answer[g.answer_map.cpu().numpy()].tolist()
         prompt_texts = g.question[g.question_map.cpu().numpy()].tolist()
+        # Legacy hard coding TODO: remove when TAGLAS is fixed.
         prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p == "") else p for p
                               in prompt_texts]
         emb = emb[g.question_index]
         answer_logits, answer_id, masks = self.decode(answer_texts, emb, prompt=prompt_input_texts)
         return answer_logits, answer_id, masks, answer_texts
 
-    def generate(self, g):
+    def generate(self, g, max_length=128):
+        """
+        Autoregressively generate tokens.
+        """
         g.num_node_feat = g.x.shape[0]
         if hasattr(g, "edge_attr") and g.edge_attr is not None:
             text_inputs = np.concatenate([g.x, g.edge_attr], axis=0)
@@ -151,7 +173,7 @@ class GOFAMistral(torch.nn.Module):
         prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p == "") else p for p
                               in prompt_texts]
         emb = emb[g.question_index]
-        generated_text = self.infer(emb, prompt=prompt_input_texts)
+        generated_text = self.infer(emb, prompt=prompt_input_texts, max_lenght=max_length)
         return generated_text
 
     def encode(self, data, graph=None, partial_grad=None):
@@ -170,6 +192,7 @@ class GOFAMistral(torch.nn.Module):
         mem_mask = mem_mask.to(cur_device)
         autoencoder_input_embedding = self.model.tokens_to_embeddings(text_output)
 
+        # Use ICAE lora only in the encoder.
         self.model.icae.set_adapter("encadapt")
         self.model.icae.enable_adapter_layers()
         for name, param in self.model.icae.named_parameters():
@@ -237,7 +260,7 @@ class GOFAMistral(torch.nn.Module):
 
         return output_emb, answer_prompt, target_mask
 
-    def infer(self, mem_embs, graph=None, prompt=None):
+    def infer(self, mem_embs, graph=None, prompt=None, max_length=128):
         cur_device = self.model.memory_token_embed.weight.device
 
         if prompt is None:
@@ -282,7 +305,7 @@ class GOFAMistral(torch.nn.Module):
             self.model.icae.enable_adapter_layers()
         else:
             self.model.icae.disable_adapter_layers()
-        for i in range(128):
+        for i in range(max_length):
             out = self.model.icae(inputs_embeds=output, attention_mask=att_mask, past_key_values=past_key_values,
                                  use_cache=True)
 

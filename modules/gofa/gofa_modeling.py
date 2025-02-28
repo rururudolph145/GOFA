@@ -35,15 +35,8 @@ class GOFAMistralModel(MistralModel):
         super().__init__(config)
         self.gofa_config = gofa_config
 
-        # if gofa_config.gnn_type == "index":
-        #     self.g_layers = nn.ModuleList([GOFADecoderLayer(gofa_config, layer_idx=i) for i in range(gofa_config.num_layers)])
-        # elif gofa_config.gnn_type == "full":
-        #     self.g_layers = nn.ModuleList([GOFAGNNConvFullAtt(gofa_config) for _ in range(gofa_config.num_layers)])
-        # else:
-        #     raise ValueError("Unknown GNN type for GOFA.")
         self.g_layers = nn.ModuleList([GOFAGatedDecoderLayer(gofa_config, layer_idx=i) for i in range(gofa_config.num_layers)])
 
-        # Initialize weights and apply final processing
         self.post_init()
 
 
@@ -65,6 +58,9 @@ class GOFAMistralModel(MistralModel):
         map_node=None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+
+        # Copied from Huggingface Mistral implementation.
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -111,6 +107,10 @@ class GOFAMistralModel(MistralModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
+        ##########################################################
+        #             Key model implementation of GOFA           #
+        ##########################################################
+
         cur_node_size = graph.num_node_feat if graph is not None else 0
 
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
@@ -134,7 +134,7 @@ class GOFAMistralModel(MistralModel):
                 gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)
                 gnn_output[mem_mask] = output.view(-1, output.size()[-1])
                 hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
-
+                hidden_states = hidden_states.to(self.gofa_config.llama_dtype)
             if g_layer_idx < 0 and partial_grad:
                 with torch.no_grad():
                     layer_outputs = self.llm_forward(decoder_layer, hidden_states, causal_mask, position_ids, past_key_values, output_attentions, use_cache, cache_position, position_embeddings, flash_attn_kwargs)

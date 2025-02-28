@@ -24,6 +24,10 @@ from types import SimpleNamespace
 
 
 def main(params):
+    ##################################################################
+    #                    Configuration                               #
+    ##################################################################
+
     if params.base_llm == 'mistral7b':
         from modules.gofa.gofa import TrainingArguments
         from modules.gofa.gofa import ModelArguments
@@ -53,6 +57,9 @@ def main(params):
         gofa_args.llama_dtype = torch.float16
     gofa_args.gnn_mlp_type = params.mlp_type
 
+    ##################################################################
+    #                    Create datasets                             #
+    ##################################################################
     def data_size_filter(data: TAGData, **kwargs):
         estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
             torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
@@ -177,6 +184,10 @@ def main(params):
     text_dataset = {"train": train_task, "val": val_tasks, "test": test_tasks}
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
 
+    ##################################################################
+    #                    Setup model and optimizer                   #
+    ##################################################################
+
     model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm, save_dir=params.exp_dir)
     train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
     if model_args.dec_lora:
@@ -188,6 +199,10 @@ def main(params):
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr *0.1)
     lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
     # lr_scheduler_config = None
+
+    ##################################################################
+    #                    Setup evaluation and train                  #
+    ##################################################################
 
     eval_data = text_dataset["val"] + text_dataset["test"]
     val_state = [dt.state_name for dt in text_dataset["val"]]

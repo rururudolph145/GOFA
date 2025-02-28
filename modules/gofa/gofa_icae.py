@@ -11,6 +11,10 @@ import torch
 
 
 class MistralICAE(torch.nn.Module):
+    """
+    Modified from ICAE (https://github.com/getao/icae). Create lora for encoder and decoder (if requested). The forward
+    function is not used in the GOFA project.
+    """
     def __init__(self, model_args, training_args, gofa_config):
         super().__init__()
         self.model_args = model_args

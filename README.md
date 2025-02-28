@@ -9,7 +9,7 @@ conda env create -f environment.yml
 
 If you want to train the GOFA model from scratch, you will need [TAGLAS](https://github.com/JiaruiFeng/TAGLAS) dataset.
 
-Clone the code of datasets we used by running:
+Clone the code of datasets under the root directory of GOFA:
 ```
 git clone https://github.com/JiaruiFeng/TAGLAS.git
 ```
@@ -17,7 +17,7 @@ git clone https://github.com/JiaruiFeng/TAGLAS.git
 The project logs onto WandB, check this [site](https://docs.wandb.ai/quickstart/) for online logging. If you prefer local logging, simply set `offline_log` in `./configs/default_config.yaml` to True.
 ## Use GOFA
 
-A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the ```sample_graph.json``` file to specify your graph. If you plan to do graph completion, add the target node id to ```complete``` field, if you plan to do QA, add the target node id to ```question``` field.
+A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the ```sample_graph.json``` file to specify your graph, GOFA works on any graph specified in the same format. If you plan to do graph completion, add the target node id to ```complete``` field, if you plan to do QA, add the target node id to ```question``` field.
 
 The pretrained checkpoints and LoRA weight will be automatically loaded.
 
@@ -36,6 +36,10 @@ You can also further specify argument by string input seperated by spaces. For e
 ```
 python run_gofa.py --override ./configs/pretrain_dev_config.yaml l2 0.1 lr 0.00001
 ```
+
+By default, GOFA use deepspeed ZeRO stage2 provided by pytorch-lightning for distributed training. This strategy is automatically enabled when the script detects more than 1 GPU.
+
+The model implementation is in './modules/gofa/'.
 
 ## Pre-training
 Pre-training require large computation resource and time (4 days on 4 Nvidia A100 80GB). Refer to the example in ```chat_gofa.py``` on how to load our pretrained checkpoints.
@@ -64,6 +68,10 @@ python run_gofa.py --override ./configs/instruct_dev_config.yaml load_dir {path/
 Please change the `load_dir` to either the corresponding downloaded checkpoints or your own pretrained checkpoints.
 
 Similarly, the script will save a checkpoint under `{root_path}/saved_exp/{experiment start time}`.
+
+To specify the data used for training and evaluation, you will modify the `train_task_name` and `eval_task_name`. You can find examples in `./configs/inference_config.yaml`.
+
+The list of available datasets is in `./TAGLAS/interfaces.py`.
 
 ## Evaluation and inference
 To explore the generation result of GOFA, you also directly run the inference mode with: 

@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import os
 from collections import  namedtuple
+from types import SimpleNamespace
 
 def safe_download_hf_file(repo_id,
                      filename,
@@ -94,9 +95,10 @@ def prepare_gofa_graph_input(graph, device=None):
     unique_question_feature, q_map = batch_unique_feature(target_question)
     unique_target_feature, a_map = batch_unique_feature(target_answer)
 
-    # Feature: edge_index, x, edge_attr, node_map, edge_map, question, answer, question_map, answer_map, question_index
+    names = ["edge_index", "x", "edge_attr", "node_map", "edge_map", "question", "answer", "question_map", "answer_map", "question_index"]
 
     features = [edges, unique_node_feature, unique_edge_feature, node_map, edge_map, unique_question_feature, unique_target_feature, q_map, a_map, torch.tensor(target_id, dtype=torch.long)]
     features = [f.to(device) if isinstance(f, torch.Tensor) else f for f in features]
+    f_names = {n: features[i] for i, n in enumerate(names)}
 
-    return GOFAGraphInput(*features)
+    return SimpleNamespace(**f_names)
