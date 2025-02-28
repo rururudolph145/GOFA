@@ -18,6 +18,7 @@ from .task_base import build_GOFA_task_graph
 from functools import partial
 from .pretrain_datasets import get_pretrain_dataset
 from .pretrain_tasks import GOFAGraphPretrainTask, GOFALinkPretrainTask, GOFANodePretrainTask
+from .pretrain_task_base import single_node_graph_complete_sentence
 
 class GOFATaskWrapper(DatasetWithCollate, ABC):
     r"""GOFA task wrapper base class. Use to wrap multiple tasks together.
@@ -41,18 +42,19 @@ class GOFATaskWrapper(DatasetWithCollate, ABC):
     def __init__(
             self,
             task_names: Union[list[str], str],
-            root: str = "TAGDataset",
-            split: str = "train",
-            save_data: bool = False,
-            from_saved: bool = False,
-            save_name: Optional[str] = None,
+            root: Union[list[str], str] = "TAGDataset",
+            split: Union[list[str], str] = "train",
+            save_data: Union[list[bool], bool] = False,
+            from_saved: Union[list[bool], bool] = False,
+            save_name: Optional[Union[list[str], str]] = None,
             post_funcs: Optional[Union[list[Callable], Callable]] = None,
-            filter_func: Optional[Callable] = None,
-            sample_size: Union[float, int, list] = 1.0,
-            sample_mode: str = "random",
+            filter_func: Optional[Union[list[Callable], Callable]] = None,
+            sample_size: Union[list[float, int, list], float, int, list] = 1.0,
+            sample_mode: Union[list[str], str] = "random",
             hop: Union[int, list[int]] = 3,
             max_nodes_per_hop: Union[int, list[int]] = 5,
-            num_workers: int = 0,
+            num_workers: Union[list[int], int] = 0,
+            data_multiple: Optional[Union[list[float], float]] = None,
             **kwargs):
         super().__init__()
         if isinstance(task_names, str):
@@ -83,6 +85,7 @@ class GOFATaskWrapper(DatasetWithCollate, ABC):
         self.sample_ind = np.concatenate([np.arange(size) for size in self.task_sizes], axis=-1).astype(int)
         self.size_seg = np.cumsum(self.task_sizes)
         self.data_start_index = np.r_[0, self.size_seg[:-1]]
+        self.data_multiple = data_multiple
 
 
     def __parse_input_args__(self, values: Any, num_task: int, is_list=False, default_none=False) -> list:
@@ -114,7 +117,7 @@ class GOFATaskWrapper(DatasetWithCollate, ABC):
         return data
 
     def __len__(self):
-        return np.sum(self.task_sizes)
+        return np.sum(self.aug_sizes)
 
     def collate(self, batch: list[TAGData]):
         float_flag = False
@@ -133,6 +136,36 @@ class GOFATaskWrapper(DatasetWithCollate, ABC):
 
     def get_collate_fn(self):
         return self.collate
+
+    @property
+    def data_multiple(self):
+        return self._data_multiple
+
+    @data_multiple.setter
+    def data_multiple(self, data_multiple):
+        data_multiple = data_multiple if data_multiple is not None else 1.0
+        if isinstance(data_multiple, float):
+            self._data_multiple = np.array([data_multiple for _ in range(self.num_tasks)])
+        elif isinstance(data_multiple, int):
+            self._data_multiple = np.array([data_multiple for _ in range(self.num_tasks)], dtype=np.int32)
+        else:
+            assert len(data_multiple) == self.num_tasks
+            self._data_multiple = np.array(data_multiple)
+        self.compute_sizes()
+
+    def compute_sizes(self):
+        if isinstance(self._data_multiple[0], float):
+            self.aug_sizes = (self.task_sizes * np.array(self._data_multiple)).astype(int)
+        elif isinstance(self._data_multiple[0], np.int32):
+            self.aug_sizes = self._data_multiple
+        self.size_seg = np.cumsum(self.aug_sizes)
+        self.ind2task = np.arange(self.num_tasks).repeat(self.aug_sizes)
+        #if data_multiple for all datasets are 1.0, don't do random sample
+        if np.sum(self._data_multiple == np.array([1.0 for _ in range(self.num_tasks)])) == self.num_tasks:
+            self.sample_ind = np.concatenate([np.arange(size) for size in self.task_sizes], axis=-1).astype(int)
+        else:
+            self.sample_ind = (np.random.rand(len(self.ind2task)) * self.task_sizes.repeat(self.aug_sizes)).astype(int)
+        self.data_start_index = np.r_[0, self.size_seg[:-1]]
 
 
 class GOFAPretrainTaskWrapper(GOFATaskWrapper):
@@ -159,18 +192,19 @@ class GOFAPretrainTaskWrapper(GOFATaskWrapper):
     def __init__(
             self,
             task_names: Union[list[str], str],
-            root: Optional[str] = "TAGDataset",
-            split: Optional[str] = "all",
-            save_data: Optional[bool] = True,
-            from_saved: Optional[bool] = True,
-            save_name: Optional[str] = None,
+            root: Union[list[str], str] = "TAGDataset",
+            split: Union[list[str], str] = "train",
+            save_data: Union[list[bool], bool] = True,
+            from_saved: Union[list[bool], bool] = True,
+            save_name: Optional[Union[list[str], str]] = None,
             post_funcs: Optional[Union[list[Callable], Callable]] = None,
-            filter_func: Optional[Callable] = None,
-            sample_size: Optional[Union[float, int, list]] = 1.0,
-            sample_mode: Optional[str] = "random",
-            hop: Optional[Union[int, list[int]]] = 3,
-            max_nodes_per_hop: Optional[Union[int, list[int]]] = 5,
-            num_workers: Optional[int] = 0,
+            filter_func: Optional[Union[list[Callable], Callable]] = None,
+            sample_size: Union[list[float, int, list], float, int, list] = 1.0,
+            sample_mode: Union[list[str], str] = "random",
+            hop: Union[int, list[int]] = 3,
+            max_nodes_per_hop: Union[int, list[int]] = 5,
+            num_workers: Union[list[int], int] = 0,
+            data_multiple: Optional[Union[list[float], float]] = None,
             pretrain_tasks: list[str] = ["CS"],
             **kwargs):
 
@@ -179,7 +213,7 @@ class GOFAPretrainTaskWrapper(GOFATaskWrapper):
         self.num_tasks = len(task_names)
         self.pretrain_tasks = self.__parse_input_args__(pretrain_tasks, self.num_tasks, is_list=True)
         super().__init__(task_names, root, split, save_data, from_saved, save_name, post_funcs, filter_func,
-                         sample_size, sample_mode, hop, max_nodes_per_hop, num_workers, **kwargs)
+                         sample_size, sample_mode, hop, max_nodes_per_hop, num_workers, data_multiple, **kwargs)
 
 
     def __get_pretrain_task__(
@@ -209,11 +243,16 @@ class GOFAPretrainTaskWrapper(GOFATaskWrapper):
         single_direction = False
         if "single_direction" in kwargs:
             single_direction = kwargs["single_direction"]
+        single_node_cs = False
+        if "single_node_cs" in kwargs:
+            single_node_cs = kwargs["single_node_cs"]
+        if single_node_cs:
+            post_funcs.append(single_node_graph_complete_sentence)
 
         post_funcs = post_funcs + [partial(build_GOFA_task_graph, is_pretrain=True, add_prompt_graph=add_prompt_graph,
                                            single_direction=single_direction)]
 
-        if name in ["ultrachat200k", "wiki_graph"]:
+        if name in ["ultrachat200k", "wiki_graph", "wiki_dump_graph"]:
             task_class = GOFAGraphPretrainTask
         elif name in ["mag240m", "arxiv", "products", "wikics", "cora", "cora_node", "pubmed", "pubmed_node"]:
             task_class = GOFANodePretrainTask
@@ -275,21 +314,22 @@ class GOFAFineTuneTaskWrapper(GOFATaskWrapper):
     def __init__(
             self,
             task_names: Union[list[str], str],
-            root: Optional[str] = "TAGDataset",
-            split: Optional[str] = "train",
-            save_data: Optional[bool] = False,
-            from_saved: Optional[bool] = False,
-            save_name: Optional[str] = None,
+            root: Union[list[str], str] = "TAGDataset",
+            split: Union[list[str], str] = "train",
+            save_data: Union[list[bool], bool] = False,
+            from_saved: Union[list[bool], bool] = False,
+            save_name: Optional[Union[list[str], str]] = None,
             post_funcs: Optional[Union[list[Callable], Callable]] = None,
-            filter_func: Optional[Callable] = None,
-            sample_size: Optional[Union[float, int, list]] = 1.0,
-            sample_mode: Optional[str] = "random",
-            hop: Optional[Union[int, list[int]]] = 3,
-            max_nodes_per_hop: Optional[Union[int, list[int]]] = 5,
-            num_workers: Optional[int] = 0,
-            selection: Optional[bool]= True,
-            way: Optional[int] = -1,
-            instruction: Optional[bool] = True,
+            filter_func: Optional[Union[list[Callable], Callable]] = None,
+            sample_size: Union[list[float, int, list], float, int, list] = 1.0,
+            sample_mode: Union[list[str], str] = "random",
+            hop: Union[int, list[int]] = 3,
+            max_nodes_per_hop: Union[int, list[int]] = 5,
+            num_workers: Union[list[int], int] = 0,
+            data_multiple: Optional[Union[list[float], float]] = None,
+            selection: Optional[Union[list[bool], bool]] = True,
+            way: Optional[Union[list[int], int]] = -1,
+            instruction: Optional[Union[list[bool], bool]] = True,
             **kwargs):
         if isinstance(task_names, str):
             task_names = [task_names]
@@ -300,7 +340,7 @@ class GOFAFineTuneTaskWrapper(GOFATaskWrapper):
         self.instructions = self.__parse_input_args__(instruction, self.num_tasks)
 
         super().__init__(task_names, root, split, save_data, from_saved, save_name, post_funcs, filter_func,
-                         sample_size, sample_mode, hop, max_nodes_per_hop, num_workers, **kwargs)
+                         sample_size, sample_mode, hop, max_nodes_per_hop, num_workers, data_multiple, **kwargs)
 
     def __get_task_list__(self):
         task_list = []

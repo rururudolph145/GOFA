@@ -2,71 +2,19 @@
 import types
 
 from transformers import AutoTokenizer
-import torch
 import torch.nn as nn
-from dataclasses import dataclass, field
 from typing import Optional
 from peft import (get_peft_model, LoraConfig)
 import math
-from modules.gofa_modeling import GOFAMistralForCausalLM
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-@dataclass
-class ModelArguments:
-    model_name_or_path: str = field(default="mistralai/Mistral-7B-Instruct-v0.2")
-    lora_r: int = field(default=512, metadata={"help": "lora rank"})
-    lora_dropout: float = field(default=0.05, metadata={"help": "lora dropout"})
-    train: bool = field(default=False,
-        metadata={"help": "if true, the model ckpt will be initialized for training; else, it's for inference"})
-    quantization: bool = field(default=False, metadata={"help": "quantization"})
-    mem_size: int = field(default=128, metadata={"help": "Memory size"}, )
-
-
-@dataclass
-class DataArguments:
-    data_path: str = field(default=None, metadata={"help": "Path to the training data."})
-    debug_data: bool = field(default=False,
-                             metadata={"help": "Enable debug dataset to quickly verify the training process"})
-
-
-@dataclass
-class TrainingArguments:
-    cache_dir: Optional[str] = field(default=None)
-    optim: str = field(default="adamw_torch")
-    model_max_length: int = field(default=28000,
-        metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."}, )
-    fixed_mem_size: int = field(default=128, metadata={"help": "Enalbing the fixed mem size."}, )
-    mean_compression_rate: int = field(default=4, metadata={"help": "Mean compression rate; default=4"}, )
-    min_tokens_for_lm: int = field(default=64, metadata={"help": "Minimum tokens for lm objective learning"}, )
-    leave_tokens_for_lm: int = field(default=8, metadata={"help": "Leave some tokens without loss for lm objective"}, )
-    lm_ratio: float = field(default=0.0, metadata={"help": "Ratio for LM training."}, )
-    add_special_token_for_lm: bool = field(default=False,
-        metadata={"help": "Add a special token for the prompt of language modeling; default: False"}, )
-    restore_from: str = field(default="",
-        metadata={"help": "The checkpoint that should be restored from for fine-tuning"})
-
-
-def print_trainable_parameters(model):
-    trainable_parameters = 0
-    all_param = 0
-    for _, param in model.named_parameters():
-        all_param += param.numel()
-        if param.requires_grad:
-            trainable_parameters += param.numel()
-    print(
-        f"trainable params: {trainable_parameters} || all params: {all_param} || trainable%: "
-        f"{100 * trainable_parameters / all_param}")  # for name, param in model.named_parameters():  #     if
-    # param.requires_grad:  #         print(name, param.shape)
-
-
-def freeze_model(model):
-    for _, param in model.named_parameters():
-        param.requires_grad = False
+from modules.gofa.gofa_modeling import GOFAMistralForCausalLM
+import torch
 
 
 class MistralICAE(torch.nn.Module):
+    """
+    Modified from ICAE (https://github.com/getao/icae). Create lora for encoder and decoder (if requested). The forward
+    function is not used in the GOFA project.
+    """
     def __init__(self, model_args, training_args, gofa_config):
         super().__init__()
         self.model_args = model_args
@@ -76,6 +24,8 @@ class MistralICAE(torch.nn.Module):
                                                             torch_dtype=torch.float16 if training_args.bf16 is False
                                                             else torch.bfloat16,
                                                             use_flash_attention_2=False, resume_download=False)
+        if gofa_config.fuse_type == "parallel":
+            self.icae.model.align_weight()
 
         self.vocab_size = self.icae.config.vocab_size + 1  # [PAD] token
         self.pad_token_id = self.vocab_size - 1

@@ -1,1 +1,1 @@
-python run_gofa.py --override ./configs/pretrain_dev_config.yaml
+python run_gofa.py --override ./configs/instruct_dev_config.yaml

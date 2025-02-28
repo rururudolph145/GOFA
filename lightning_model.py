@@ -1,11 +1,10 @@
 import os
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Union, Callable
 
 import numpy as np
 
 from gp.lightning.module_template import BaseTemplate
 import torch
-
 
 class GraphPredLightning(BaseTemplate):
     def forward(self, batch):
@@ -41,14 +40,21 @@ class GraphTextPredLightning(BaseTemplate):
         self.lr_schedulers().T_max = self.exp_config.T_max
 
     def on_train_batch_start(self, batch: Any, batch_idx: int) -> Optional[int]:
-        # self.model.llm_model.train_mode()
         pass
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
-        self.model.save_partial(os.path.join(self.model.save_dir, "mem_ckpt.pth"))
+        if self.trainer.local_rank == 0:
+            print("save pth model")
+            self.model.save_partial(os.path.join(self.model.save_dir, "mem_ckpt.pth"))
         for k in list(checkpoint["state_dict"].keys()):
             if "g_layers" not in k:
                 del checkpoint["state_dict"][k]
+
+    def on_train_epoch_end(self):
+        super().on_train_epoch_end()
+        if self.trainer.local_rank == 0:
+            print("save last epoch ckpt")
+            self.model.save_partial(os.path.join(self.model.save_dir, "last_epoch_ckpt.pth"))
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):
         try:
@@ -66,3 +72,12 @@ class GraphTextPredLightning(BaseTemplate):
             else:
                 raise e
         return loss
+
+    # def on_validation_epoch_start(self) -> None:
+    #     super().on_validation_epoch_start()
+    #     self.old_decode = self.model.decode
+    #     self.model.decode = self.model.generate
+    #
+    # def on_validation_epoch_end(self):
+    #     super().on_validation_epoch_end()
+    #     self.model.decode = self.old_decode

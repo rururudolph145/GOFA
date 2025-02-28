@@ -1,6 +1,6 @@
 # Major change since July 9 for scaling up
 # Major change since July 18 for fixing the lora bug
-from transformers import LlamaTokenizer, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
@@ -72,7 +72,7 @@ class MemoryHead(nn.Module):
         return self.dense_out(x).to(previous_type)
 
 
-class LlamaLora(nn.Module):
+class MistralLora(nn.Module):
     def __init__(self, model_args, training_args, gofa_config):
         super().__init__()
         self.model_args = model_args
@@ -80,7 +80,7 @@ class LlamaLora(nn.Module):
         self.model_name = model_args.model_name_or_path
         # self.auto_encoder = AutoModelForCausalLM.from_pretrained(model_name).to(device)
         self.quantization = model_args.quantization
-        self.icae = LlamaForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float16 if training_args.bf16 is False else torch.bfloat16) # [PAD] token
+        self.icae = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float16 if training_args.bf16 is False else torch.bfloat16) # [PAD] token
 
         self.eos_id = 1
         self.dim = self.icae.config.hidden_size
@@ -88,8 +88,8 @@ class LlamaLora(nn.Module):
         #     self.icae = prepare_model_for_kbit_training(self.icae)
         lora_config = self.create_lora_config()
         self.icae = get_peft_model(self.icae, lora_config)
-        self.tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
-        self.left_tokenizer = LlamaTokenizer.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.left_tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.left_tokenizer.padding_side = "left"
         self.left_tokenizer.truncation_side = "left"
 
@@ -121,3 +121,4 @@ class LlamaLora(nn.Module):
 
     def get_tokenizer(self):
         return self.tokenizer
+

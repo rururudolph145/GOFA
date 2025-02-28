@@ -55,6 +55,20 @@ def auc_word(func, output, batch):
     return func(pos, target.to(torch.long))
 
 
+class NormalizedLossFactory:
+    def __init__(self, batch_size, seq_len):
+        self.denom = batch_size * seq_len
+
+    def __call__(self, func, output, batch):
+        sentence_size = len(batch.node_map)
+        pred = output.logits.reshape(-1, output.logits.size()[-1])
+        target = output.answer_id.view(-1)
+        # print(target, pred.sort()[1][:, -1])
+        numer = target.ne(-100).sum()
+        original_loss = func(pred, target)
+        norm_loss = original_loss * numer / (self.denom * sentence_size)
+        return original_loss
+
 def normalized_loss_factory(batch_size, seq_len):
     denom = batch_size * seq_len
 

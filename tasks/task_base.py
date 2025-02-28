@@ -10,7 +10,8 @@ import string
 import numpy as np
 
 def generate_random_node_order(num_nodes: int):
-    return torch.randperm(num_nodes)
+    order, _ = torch.sort(torch.randperm(676)[:num_nodes])
+    return order
 
 def generate_alphabet_id():
     # support graph with less than 26 * 26 nodes.
@@ -74,7 +75,7 @@ def add_prompt_graph_to_data(
             data.edge_map = torch.cat([edge_map, prompt_edge_map + num_feature_edge_type], dim=-1)
         else:
             data.edge_map = torch.cat([edge_map, prompt_edge_map + edge_map.max()], dim=-1)
-        data.edge_attr = np.concatenate([data.edge_attr, prompt_edge_text[prompt_edge_map]], axis=-1)
+        data.edge_attr = np.concatenate([data.edge_attr, prompt_edge_text[prompt_edge_map.numpy()]], axis=-1)
 
     if prompt_edge_text is not None:
         data.x = np.concatenate([data.x, prompt_node_text])

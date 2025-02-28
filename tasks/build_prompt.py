@@ -145,7 +145,7 @@ def pubmed_link_prompt(data, task_class, instruction=True, **kwargs):
 def arxiv_prompt(data, task_class, selection=True, way=-1, instruction=True, **kwargs):
     question = data.question
     graph_description = task_class.dataset.graph_description
-    label_list = task_class.dataset.label
+    label_list = task_class.dataset.label[:-2]
     if selection:
         label_selection_list = sample_k_labels_with_true(label_list, data.label_map.item(), way=way)
         selection_prompt = " Choose from the following: " + "; ".join(label_selection_list) + "."
@@ -290,3 +290,70 @@ def expla_graph_prompt(data, task_class, instruction=True, **kwargs):
 
 def scene_graph_prompt(data, task_class, **kwargs):
     return default_prompt(data, task_class, **kwargs)
+
+
+def mag240m_prompt(data, task_class, selection=True, way=-1, instruction=True, **kwargs):
+    question = data.question
+    graph_description = task_class.dataset.graph_description
+    label_list = task_class.dataset.label
+    if selection:
+        label_selection_list = sample_k_labels_with_true(label_list, data.label_map.item(), way=way)
+        selection_prompt = " Choose from the following: " + "; ".join(label_selection_list) + "."
+    else:
+        label_selection_list = label_list
+        selection_prompt = ""
+
+    if instruction:
+        label_desc = task_class.dataset.side_data.label_description
+        instruction_prompt = ("You are an expert in academic research. You need to choose the correct paper category based "
+                            "on the paper content and its citation network. For example, ") + "; ".join(
+            (f"if the paper [NODE_INDEX {data.target_index.item()}] " + label_desc[label][:-1].strip(".").lower().replace(".", ",")
+             + ", choose " + label) for label in label_selection_list) + ". "
+    else:
+        instruction_prompt = ""
+
+    data.question = graph_description + instruction_prompt + question + selection_prompt
+    return data
+
+
+def wikikg90m_prompt(data, task_class, selection=True, way=-1, instruction=True, **kwargs):
+    question = data.question
+    graph_description = task_class.dataset.graph_description
+    label_list = task_class.dataset.label
+    if selection:
+        label_selection_list = sample_k_labels_with_true(label_list, data.label_map.item(), way=way)
+        selection_prompt = " Choose from the following: " + "; ".join(label_selection_list) + "."
+    else:
+        label_selection_list = label_list
+        selection_prompt = ""
+
+    if instruction:
+        label_desc = task_class.dataset.side_data.label_description
+        instruction_prompt = (f"You are an expert in knowledge graph reasoning. You need to choose the correct relation type between two "
+                    f"target entities [NODE_INDEX {data.target_index[0].item()}] and [NODE_INDEX {data.target_index[1].item()}] "
+                    f"based on their existing relations. For example, ") + "; ".join(
+            (f"if two entities involve " + label_desc[label][:-1].strip(".").lower().replace(".", ",")
+             + ", choose " + label) for label in label_selection_list) + ". "
+    else:
+        instruction_prompt = ""
+
+    data.question = graph_description + instruction_prompt + question + selection_prompt
+    return data
+
+
+def arxiv_link_prompt(data, task_class, instruction=True, **kwargs):
+    question = data.question
+    graph_description = task_class.dataset.graph_description
+    if instruction:
+        instruction_prompt = (f"You are a computer science expert tasked with determining whether two given papers "
+                              f"[NODE_INDEX {data.target_index[0].item()}] and [NODE_INDEX {data.target_index[1].item()}] "
+                              f"in the computer science domain has citation relationship based on their content and"
+                              f" network characteristics. If two papers are from the same category, the content of the "
+                              f"two papers is similar, the shortest path distance between the two papers is small, or "
+                              f"the papers have a large number of common neighbors in the citation network, choose Yes. "
+                              f"If two papers are different, the shortest path distance between the two papers is large,"
+                              f" or the papers do not have many common neighbors in the citation network, choose No. ")
+    else:
+        instruction_prompt = ""
+    data.question = graph_description + instruction_prompt + question
+    return data

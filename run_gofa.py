@@ -1,11 +1,8 @@
 import argparse
 import os
-from collections import OrderedDict
 from datetime import timedelta
 
-import shutil
 from lightning.pytorch.loggers import WandbLogger
-from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
 from gp.utils.utils import (load_yaml, combine_dict, merge_mod, setup_exp, set_random_seed, )
 from gp.lightning.metric import (EvalKit, )
@@ -13,8 +10,8 @@ from gp.lightning.data_template import DataModule
 from gp.lightning.training import lightning_fit, lightning_test
 from gp.lightning.module_template import ExpConfig
 from lightning_model import GraphTextPredLightning
-from gofa_models.model import GOFA
-from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
+from model import GOFA
+from modules.gofa import GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
 from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
@@ -27,47 +24,72 @@ from types import SimpleNamespace
 
 
 def main(params):
-    if params.base_llm == 'llama7b':
-        from modules.gofa_icae_llama_modeling import ModelArguments, TrainingArguments
-        gofa_config = GOFALlamaConfig
-    elif params.base_llm == 'mistral7b':
-        from modules.gofa_icae_mistral_modeling import ModelArguments, TrainingArguments
+    ##################################################################
+    #                    Configuration                               #
+    ##################################################################
+
+    if params.base_llm == 'mistral7b':
+        from modules.gofa.gofa import TrainingArguments
+        from modules.gofa.gofa import ModelArguments
         gofa_config = GOFAMistralConfig
     else:
         raise NotImplementedError(params.base_llm + " is not supported. Please choose from: llama7b, mistral7b,")
-    if params.mode.endswith("gen"):
+    if params.mode=="generate":
         params.last_save = False
 
     wandb_logger = WandbLogger(project=params.log_project, name=f"{params.exp_name}_{params.llm_name}",
                                save_dir=params.exp_dir, offline=params.offline_log, )
     print("available devices: ", torch.cuda.device_count())
-    checkpoint_dir = os.path.join(params.exp_dir, params.log_project)
+    if params.ckpt_save_path is not None:
+        date = params.exp_dir.split("/")[-1]
+        params.ckpt_save_path = params.ckpt_save_path+"/" + date
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
-    model_args, training_args, ggama_args = ModelArguments(), TrainingArguments(), gofa_config(
-        num_layers=params.num_layers)
+    model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
+        num_layers=params.num_layers, gnn_type=params.gnn_type, interleave=params.interleave, gating=params.gating, fuse_type=params.fuse_type, gnn_mlp_type=params.mlp_type)
     model_args.dec_lora = params.dec_lora
     training_args.model_max_length = params.llm_max_length
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
-        ggama_args.llama_dtype = torch.bfloat16
-    ggama_args.ggama_mlp_type = params.mlp_type
+        gofa_args.llama_dtype = torch.bfloat16
+    else:
+        training_args.bf16 = False
+        gofa_args.llama_dtype = torch.float16
+    gofa_args.gnn_mlp_type = params.mlp_type
 
+    ##################################################################
+    #                    Create datasets                             #
+    ##################################################################
+    def data_size_filter(data: TAGData, **kwargs):
+        estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
+            torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
+        if len(data.node_map) + len(torch.unique(data.edge_map)) < 40 and estimated_mem < 65:
+            return data
+        else:
+            return None
 
     if params.run_mode == "pretrain":
         ######################################################################################################
         #                                          Pretrain Task                                             #
         ######################################################################################################
+        task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
+                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
 
-        train_task = GOFAPretrainTaskWrapper(["mag240m", "ultrachat200k", "wiki_graph", "wikikg90m"], root=params.data_root_path,
-                                            save_name=f"pretrain_{params.last_epochs}", fast_data_load=True)
+        save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"]
 
-        val_tasks = GOFAPretrainTaskWrapper(["arxiv", "ultrachat200k"], root=params.data_root_path,
-                                            split="val", sample_size=100, save_name="pretrain_val",
+        filter_func = data_size_filter
+        save_names = [name + str(params.last_epochs) for name in save_names]
+        train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names,
+                                             fast_data_load=True, filter_func=filter_func)
+
+        val_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path,
+                                            split="val", sample_size=100, save_name="pretrain_val", pretrain_tasks=["CS", "CN", "SP"],
                                             num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
 
-        test_tasks = GOFAPretrainTaskWrapper(["arxiv", "ultrachat200k"], root=params.data_root_path,
-                                            split="test", sample_size=100, save_name="pretrain_test",
+        test_tasks = GOFAPretrainTaskWrapper("cora", root=params.data_root_path,
+                                            split="test", sample_size=100, save_name="pretrain_test", pretrain_tasks=["CS", "CN", "SP"],
                                             num_workers=params.num_workers, num_additional_sentences=3, num_SP=3, num_CN=3)
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
@@ -92,20 +114,13 @@ def main(params):
             ######################################################################################################
             #                                          FINETUNE Task                                             #
             ######################################################################################################
-            def data_size_filter(data: TAGData, **kwargs):
-                estimated_mem = 24.495 + 0.4645 * len(data.node_map) + 0.0042 * len(
-                    torch.unique(data.node_map)) + 0.1689 * len(data.edge_map) + 0.2846 * len(torch.unique(data.edge_map))
-                if len(data.node_map)+len(torch.unique(data.edge_map)) < 42 and estimated_mem < 70:
-                    return data
-                else:
-                    return None
+            filter_func = data_size_filter
+
         else:
             ######################################################################################################
             #                                          Inference                                                 #
             ######################################################################################################
-            def data_size_filter(data: TAGData, **kwargs):
-                return data
-
+            filter_func = lambda x:x
 
         train_task = GOFAFineTuneTaskWrapper(train_tasks,
                                             root=params.data_root_path,
@@ -113,11 +128,14 @@ def main(params):
                                             hop=params.hops,
                                             max_nodes_per_hop=params.train_max_nodes_per_hops,
                                             sample_size=params.sample_size_per_task,
-                                            filter_func=data_size_filter,
+                                            filter_func=filter_func,
                                             way=params.ways,
                                             num_workers=params.num_workers,
                                             instruction=params.instructs,
-                                            selection=params.selections)
+                                            selection=params.selections,
+                                            save_data=True,
+                                            from_saved=True,
+                                            fast_data_load=True)
 
 
         n_steps = int(len(train_task) * params.num_epochs / (params.grad_acc_step * int(torch.cuda.device_count())))
@@ -126,26 +144,28 @@ def main(params):
                                             split="val",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=10,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selection=selection, save_data=True,
+                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
                                                 params.inf_ways, params.inf_instructs, params.inf_selections)]
 
         test_tasks = [GOFAFineTuneTaskWrapper(task_name,
                                             root=params.data_root_path,
-                                            split="test",
+                                            split="train",
                                             hop=hop,
                                             max_nodes_per_hop=max_nodes_per_hop,
-                                            sample_size=params.inf_sample_size_per_task,
+                                            sample_size=inf_sample_size,
                                             num_workers=params.num_workers,
                                             way=way,
                                             instruction=instruct,
-                                            selections=selection) for task_name, hop, max_nodes_per_hop, way, instruct, selection in
+                                            selection=selection,save_data=True,
+                                            from_saved=True) for task_name, hop, max_nodes_per_hop, way, instruct, selection, inf_sample_size in
                                             zip(eval_tasks, params.inf_hops, params.inf_max_nodes_per_hops,
-                                                params.inf_ways, params.inf_instructs, params.inf_selections)]
+                                                params.inf_ways, params.inf_instructs, params.inf_selections, params.inf_sample_size_per_task)]
 
         eval_metric_names, evaluators = get_evaluators(eval_tasks, task_types="QA")
         evlter = evaluators + evaluators
@@ -164,7 +184,11 @@ def main(params):
     text_dataset = {"train": train_task, "val": val_tasks, "test": test_tasks}
     params.datamodule = DataModule(text_dataset, num_workers=params.num_workers)
 
-    model = GOFA(transformer_args=[model_args, training_args, ggama_args], mode=params.mode, base_llm=params.base_llm, save_dir=params.exp_dir)
+    ##################################################################
+    #                    Setup model and optimizer                   #
+    ##################################################################
+
+    model = GOFA(transformer_args=[model_args, training_args, gofa_args], mode=params.mode, base_llm=params.base_llm, save_dir=params.exp_dir)
     train_params = list(model.llm_model.model.icae.get_base_model().model.g_layers.parameters())
     if model_args.dec_lora:
         for name, param in model.llm_model.model.icae.named_parameters():
@@ -172,9 +196,13 @@ def main(params):
                 train_params += [param]
     optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr*0.1)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr *0.1)
     lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
     # lr_scheduler_config = None
+
+    ##################################################################
+    #                    Setup evaluation and train                  #
+    ##################################################################
 
     eval_data = text_dataset["val"] + text_dataset["test"]
     val_state = [dt.state_name for dt in text_dataset["val"]]
@@ -214,29 +242,18 @@ def main(params):
     pred_model = GraphTextPredLightning(exp_config, model, metrics)
     if params.load_model:
         print("-"*60+"LOADING"+"-"*60)
-        if os.path.isdir(params.load_dir):
-            prefix = "_forward_module.model.llm_model.model.icae.base_model.model.model.g_layers."
-            state_dict = get_fp32_state_dict_from_zero_checkpoint(params.load_dir)
-            partial_dict = OrderedDict()
-            for s in state_dict:
-                if s.startswith(prefix):
-                    partial_dict[s[len(prefix):]] = state_dict[s]
-            model.load_partial(state_dict=partial_dict)
-        else:
-            model.load_partial(load_dir=params.load_dir)
-
+        model.load_partial(load_dir=params.load_dir)
     strategy = "deepspeed_stage_2" if torch.cuda.device_count() > 1 else "auto"
 
     if params.run_mode == "inf":
-        val_res, test_res = lightning_test(wandb_logger, pred_model, params.datamodule, metrics, params.load_dir,
-                                           strategy=strategy)
+        val_res, test_res = lightning_test(wandb_logger, pred_model, params.datamodule, metrics, strategy=strategy)
     else:
         val_res, test_res = lightning_fit(wandb_logger, pred_model, params.datamodule, metrics, params.num_epochs+params.last_epochs,
                                           strategy=strategy, save_model=params.save_model["save"], load_best=False,
                                           reload_freq=1, test_rep=params.test_rep, val_interval=params.val_interval,
                                           grad_clipping=params.grad_clip, grad_acc_step=params.grad_acc_step,
                                           save_time=timedelta(hours=params.save_model["time"]), cktp_prefix="best_ckpt",
-                                          precision=params.training_precision, top_k=params.save_model["top_k"], ckpt_path=params.ckpt_path, save_last=params.save_model["last"])
+                                          precision=params.training_precision, top_k=params.save_model["top_k"], ckpt_path=params.ckpt_path, save_last=params.save_model["last"], ckpt_save_path=params.ckpt_save_path)
     if params.last_save:
         model.save_partial(os.path.join(params.exp_dir, "best_ckpt.pth"))
 

@@ -1,11 +1,9 @@
-root_path: ""
-data_root_path: "./TAGDataset"
-num_bases: 4
-emb_dim: 1024
-num_layers: 6
-mlp_type: "llama"
-dropout: 0.0
-JK: "last"
+root_path: "./"  # saved pth ckpt and wandb logging
+data_root_path: "./TAGDataset"  # data directory
+ckpt_save_path:   # path to save deepspeed ckpt
+num_layers: 5    # number of gnn layers
+gnn_type: "index"
+fuse_type: interleave    # determines how GNN is fused into the LLM choose from {interleave, parallel} parallel is under development.
 lr: 0.0003
 l2: 0.1
 grad_clip: 0.5
@@ -15,25 +13,17 @@ batch_size: 1
 eval_batch_size: 1
 num_workers: 4
 seed: 1
-data_path:
 offline_log: False
-test_rep: 1
-log_project: "ggama"
-exp_name: "ggama"
+log_project: "GOFA"
+exp_name: "gofa"
 train_sample_size: -1
 eval_sample_size: -1
-rwpe:
-task_names:
+task_names:              # Name of the dataset trained
   - arxiv
-llm_name: "icae"
 base_llm: "mistral7b"
 llm_max_length: 128
-llm_b_size: 1
-val_interval: 1
-load_texts: True
-mode: "autoencoder"
-temp: 0.1
-compressed_layer: 32
+val_interval:      # validate per {val_interval} training steps.
+mode: "decode"
 max_nodes_per_hop: 5
 grad_acc_step: 8
 save_model:
@@ -46,9 +36,8 @@ save_model:
   last: True
 load_dir: "./best_ckpt.pth"
 load_model: False
-last_save: True
+last_save: False
 training_precision: "bf16-mixed"
 ckpt_path:
 run_mode: "pretrain"
-dec_lora: False
-node_text: False
+dec_lora: False   # Set to True to tune decoder by LoRA.
