@@ -22,7 +22,9 @@ A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the 
 The pretrained checkpoints and LoRA weight will be automatically loaded.
 
 ## Overview
-`run_gofa.py` is the main entry point to train GOFA model. 
+`run_gofa.py` is the main entry point to train GOFA model. The architecture of GOFA is depicted below.
+
+![alt text](figures/model.png)
 
 `./configs` includes configuration for different settings. `default_config.yaml` is the base configuration, which can be overriden by specifying `--override {override_config dir}`.
 
@@ -49,6 +51,10 @@ To run the pretraining yourself, please first generate pretraining data using th
 python pretrain_data_generation.py
 ```
 The above code will generate three pretrain data subset. The generation process require large memory and will last for long time. Please allocate enough resource for generation.
+
+The pretraining datasets all follow the graph completion paradigm as depicted below:
+
+![alt text](figures/data.png)
 
 After data generation, run the following line to start the pretraining:
 ```
@@ -80,6 +86,9 @@ python run_gofa.py --override ./configs/inference_config.yaml load_dir {/path/to
 ```
 Please modify the config file for selecting corresponding dataset. Note that for both zero-shot and supervised experiment, the
 trained model should be evaluated under inference mode to obtain the correct evaluation result. 
+
+GOFA generates interesting behavior on questions it never sees as shown below:
+![alt text](figures/quares.png)
 
 
 ## Citation
