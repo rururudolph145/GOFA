@@ -5,13 +5,6 @@ import numpy as np
 
 from gp.lightning.module_template import BaseTemplate
 import torch
-from lightning.pytorch.core.optimizer import LightningOptimizer
-from torch.optim import Optimizer
-# from dataclasses import dataclass, field
-# from torch import Tensor
-# import traceback
-# from lightning.pytorch.loops.optimization.automatic import Closure
-# from functools import partial
 
 class GraphPredLightning(BaseTemplate):
     def forward(self, batch):
@@ -50,16 +43,18 @@ class GraphTextPredLightning(BaseTemplate):
         pass
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
-        print("save pth model")
-        self.model.save_partial(os.path.join(self.model.save_dir, "mem_ckpt.pth"))
+        if self.trainer.local_rank == 0:
+            print("save pth model")
+            self.model.save_partial(os.path.join(self.model.save_dir, "mem_ckpt.pth"))
         for k in list(checkpoint["state_dict"].keys()):
             if "g_layers" not in k:
                 del checkpoint["state_dict"][k]
 
     def on_train_epoch_end(self):
         super().on_train_epoch_end()
-        print("save last epoch ckpt")
-        self.model.save_partial(os.path.join(self.model.save_dir, "last_epoch_ckpt.pth"))
+        if self.trainer.local_rank == 0:
+            print("save last epoch ckpt")
+            self.model.save_partial(os.path.join(self.model.save_dir, "last_epoch_ckpt.pth"))
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):
         try:
@@ -86,29 +81,3 @@ class GraphTextPredLightning(BaseTemplate):
     # def on_validation_epoch_end(self):
     #     super().on_validation_epoch_end()
     #     self.model.decode = self.old_decode
-
-    #
-    #
-    # def optimizer_step(
-    #     self,
-    #     epoch: int,
-    #     batch_idx: int,
-    #     optimizer: Union[Optimizer, LightningOptimizer],
-    #     optimizer_closure: Optional[Callable[[], Any]] = None,
-    # ) -> None:
-    #     try:
-    #         output = optimizer_closure()
-    #         def dummy_closure():
-    #             return output
-    #         optimizer.step(dummy_closure)
-    #     except Exception as e:
-    #         if "out of memory" in str(e):
-    #             print("Ignoring optimizer OOM batch")
-    #             print(traceback.format_exc())
-    #             make_dummy_batch(optimizer_closure._step_fn.args[0]["batch"])
-    #             output = optimizer_closure()
-    #             def dummy_closure():
-    #                 return output
-    #             optimizer.step(dummy_closure)
-    #         else:
-    #             raise e

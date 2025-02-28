@@ -1,0 +1,51 @@
+{
+  "question": [2],
+  "complete": [],
+  "node": {
+    "0": "Develop a TypeScript function that takes a string as input and returns an object containing the frequency count of all the unique words in the text. The function should remove all punctuation marks and ignore case sensitivity. Additionally, contractions (e.g. \"can\\'t\" and \"won\\'t\") should be split into their constituent words (\"can\" and \"not\", \"will\" and \"not\", respectively) before counting. The output object should have each unique word as a key and the corresponding frequency count as the value. The function should be efficient and handle large amounts of text data.",
+    "1": "```\\nfunction wordFrequency(text: string): {[key: string]: number} {\\n  const words = text.toLowerCase().replace(/[\\\\.,-\\\\/#!$%\\\\^&\\\\*;:{}=_`~()]/g,\"\").replace(/\\'([^s])/g, \\'$1\\').split(/\\\\s+/);\\n  const frequency: {[key: string]: number} = {};\\n  for (const word of words) {\\n    const splitContraction = word.replace(/n\\'t/g, \\' not\\').split(\\' \\');\\n    for (const splitWord of splitContraction) {\\n      if (splitWord !== \\'\\') {\\n        frequency[splitWord] = (frequency[splitWord] || 0) + 1;\\n      }\\n    }\\n  }\\n  return frequency;\\n}\\n```\\n\\nExplanation:\\n- `text.toLowerCase()` converts the input string to lowercase to ignore case sensitivity.\\n- `.replace(/[\\\\.,-\\\\/#!$%\\\\^&\\\\*;:{}=_`~()]/g,\"\")` removes all punctuation marks using a regular expression.\\n- `.replace(/\\'([^s])/g, \\'$1\\')` splits contractions into constituent words (\"can\\'t\" -> \"can not\").\\n- `.split(/\\\\s+/)` splits the string into an array of words.\\n- `const frequency: {[key: string]: number} = {};` initializes an empty object to store the word frequencies.\\n- `for (const word of words)` iterates through each word in the array to update their frequency count in the object.\\n- `const splitContraction = word.replace(/n\\'t/g, \\' not\\').split(\\' \\');` splits any remaining contractions (e.g. \"won\\'t\" -> \"will not\") and then splits the word by spaces.\\n- `frequency[splitWord] = (frequency[splitWord] || 0) + 1;` updates the frequency count for each split word in the object. `frequency[splitWord]` retrieves the current count (or 0 if it doesn\\'t exist) and adds 1 to it.",
+    "2": "Can you add some comments to help me understand what each part of the code does?"
+    },
+  "edge": [
+    {
+      "source": 0,
+      "target": 1,
+      "relation": {
+        "rating": "somewhat related",
+        "content": "Target sentence answer the instruction in the source sentence."
+      }
+    },
+    {
+      "source": 0,
+      "target": 2,
+      "relation": {
+        "rating": "not related",
+        "content": "This edge connects the nodes in graph to a prompt node."
+      }
+    },
+    {
+      "source": 1,
+      "target": 2,
+      "relation": {
+        "rating": "somewhat related",
+        "content": "This edge connects the nodes in graph to a prompt node."
+      }
+    },
+    {
+      "source": 2,
+      "target": 0,
+      "relation": {
+        "rating": "somewhat related",
+        "content": "This edge connects the prompt node to a node in the graph."
+      }
+    },
+    {
+      "source": 2,
+      "target": 1,
+      "relation": {
+        "rating": "somewhat related",
+        "content": "This edge connects the prompt node to a node in the graph."
+      }
+    }
+  ]
+}

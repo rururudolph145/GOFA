@@ -1,21 +1,12 @@
-root_path: "./"
-data_root_path: "/project/tantra/feng.jiarui/dataset_dev/TAGDataset"
-load_dir:
 ckpt_path:
-ckpt_save_path: "/storage2/fs1/yixin.chen/Active/jerry.kong/gofa_saved_exp"
+ckpt_save_path: "./gofa_deepspeed_ckpt/"
 last_epochs: 0
 num_epochs: 1
 grad_acc_step: 64
-mlp_type: llama
-gnn_type: combine
-num_layers: 1
+num_layers: 5
 l2: 0.1
 lr: 0.0003
-gating: False
-interleave: True
-mode: "autoencoder"
-load_model: False
-dec_lora: False
+mode: "decode"
 save_model:
   save: True
   steps:

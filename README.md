@@ -1,5 +1,5 @@
 # Generative One-For-All (GOFA)
- The source code for paper [GOFA: A  generative one-for-all model for joint graph language modeling](https://arxiv.org/abs/2407.09709). The code is still under clean. Feel free to open an issue in GitHub if you encounter any problem. 
+ The source code for ICLR 25 paper [GOFA: A  generative one-for-all model for joint graph language modeling](https://openreview.net/forum?id=mIjblC9hfm). [ArXiv](https://arxiv.org/abs/2407.09709)
 
 ## Installation Guide.
 First, clone the code repository and move to the code file. Then, create the python environment. We provide environment configuration:
@@ -7,66 +7,72 @@ First, clone the code repository and move to the code file. Then, create the pyt
 conda env create -f environment.yml
 ```
 
-Next, please download the pretrained checkpoint of ICAE from [here](https://huggingface.co/sggetao/icae/tree/main). Specifically, download and put
-the following files `llama-2-7b-chat-finetuned-icae_zeroweight_llama2.pt` and `mistral_7b_ft_icae.safetensors` into directory `./cache_data/model/`
+If you want to train the GOFA model from scratch, you will need [TAGLAS](https://github.com/JiaruiFeng/TAGLAS) dataset.
 
-Finally, clone the code of datasets we used from [TAGLAS](https://github.com/JiaruiFeng/TAGLAS) by running:
+Clone the code of datasets we used by running:
 ```
 git clone https://github.com/JiaruiFeng/TAGLAS.git
 ```
 
+The project logs onto WandB, check this [site](https://docs.wandb.ai/quickstart/) for online logging. If you prefer local logging, simply set `offline_log` in `./configs/default_config.yaml` to True.
+## Use GOFA
+
+A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the ```sample_graph.json``` file to specify your graph. If you plan to do graph completion, add the target node id to ```complete``` field, if you plan to do QA, add the target node id to ```question``` field.
+
+The pretrained checkpoints and LoRA weight will be automatically loaded.
+
+## Overview
+`run_gofa.py` is the main entry point to train GOFA model. 
+
+`./configs` includes configuration for different settings. `default_config.yaml` is the base configuration, which can be overriden by specifying `--override {override_config dir}`.
+
+For example, 
+```
+python run_gofa.py --override ./configs/pretrain_dev_config.yaml
+```
+
+You can also further specify argument by string input seperated by spaces. For example,
+
+```
+python run_gofa.py --override ./configs/pretrain_dev_config.yaml l2 0.1 lr 0.00001
+```
 
 ## Pre-training
-Pre-training require large computation resource and time. If you want to explore GOFA, we recommend you to download our pre-trained checkpoints and directly run downstream fine-tuning. You can download checkpoints from [here](https://huggingface.co/WFRaain/GOFA/tree/main).
-We provide checkpoints for both Llama2 (`qamag03_best_ckpt.pth`) and Mistral (`mistral_qamag03_best_ckpt.pth`). 
-
-To run the pretraining by yourself, please first generate pretraining data using the following script. 
+Pre-training require large computation resource and time (4 days on 4 Nvidia A100 80GB). Refer to the example in ```chat_gofa.py``` on how to load our pretrained checkpoints.
+To run the pretraining yourself, please first generate pretraining data using the following script. 
 
 ```
 python pretrain_data_generation.py
 ```
-The above code will generate three pretrain data subset. Note that the generation process require huge memory and will last for long time. Please allocate enough resource for generation.
+The above code will generate three pretrain data subset. The generation process require large memory and will last for long time. Please allocate enough resource for generation.
 
 After data generation, run the following line to start the pretraining:
 ```
-python run_gofa.py --override ./configs/pretrain_config.yaml
+python run_gofa.py --override ./configs/pretrain_dev_config.yaml
 ```
-This code will run pretraining of the GOFA llama2 version on the first pretrain data subset. if you want to train the mistral version, run:
-```
-python run_gofa.py --override ./configs/pretrain_config.yaml base_llm mistral7b
-```
-To continue the training on next subset, check the `last_epochs` in the `./configs/default_config.yaml` to the next batch and `ckpt_path` to the saved checkpoint on the last pretraining.
+Check `./configs/pretrain_dev_config.yaml` for hyperparameters settings and specifying the correct pretraining dataset.
+
+For example, after first epoch, a deepspeed checkpoint will be automatically saved to `{ckpt_save_path}/{experiment start time}` specified in the config. If you want to train the second epoch on the second batch of data, change `last_epoch` to 1 and `ckpt_path` to the saved checkpoint, and run the same command.
+
+Besides the deepspeed checkpoints, a copy of trainable parameters will be saved under `{root_path}/saved_exp/{experiment start time}` with the name `last_epoch_ckpt.pth`. **You can load this checkpoint for downstream fine-tuning. We also shared pretrained checkpoints in this format.**
 
 ## Instruction fine-tuning for zero-shot experiment.
-To repeat the experiments of GOFA on zero-shot learning with arxiv instruction tuning, run:
+To repeat the experiments of GOFA on zero-shot learning, run:
 ```
-python run_gofa.py --override ./configs/instruct_arxiv_config.yaml load_dir llama_pretrained_model_pth base_llm llama7b
-python run_gofa.py --override ./configs/instruct_arxiv_config.yaml load_dir mistral_pretrained_model_pth base_llm mistral7b
+python run_gofa.py --override ./configs/instruct_dev_config.yaml load_dir {path/to/ckpt/}
 ```
 Please change the `load_dir` to either the corresponding downloaded checkpoints or your own pretrained checkpoints.
 
-Similarly, to repeat the experiments of GOFA on zero-shot learning with pubmed link instruction tuning, run:
-```
-python run_gofa.py --override ./configs/instruct_pubmed_config.yaml load_dir mistral_pretrained_model_pth base_llm mistral7b
-```
-
-## Supervised fine-tuning.
-To repeat the experiments of GOFA on supervised learning, run:
-```
-python run_gofa.py --override ./configs/supervised_config.yaml load_dir pretrained_model_pth base_llm model_type
-```
-Similar as the above, modify the `load_dir` and `base_llm` for validating corresponding model.
+Similarly, the script will save a checkpoint under `{root_path}/saved_exp/{experiment start time}`.
 
 ## Evaluation and inference
-To explore the generation result of GOFA, you can also directly run the inference mode with: 
+To explore the generation result of GOFA, you also directly run the inference mode with: 
 ```
-python run_gofa.py --override ./configs/inference_config.yaml load_dir finetuned_model_pth base_llm llama7b
+python run_gofa.py --override ./configs/inference_config.yaml load_dir {/path/to/ckpt}
 ```
 Please modify the config file for selecting corresponding dataset. Note that for both zero-shot and supervised experiment, the
-trained model should be evaluated under inference model to obtain the correct evaluation result. 
+trained model should be evaluated under inference mode to obtain the correct evaluation result. 
 
-We also provide checkpoint of mistral version of GOFA on arxiv instruction-tuning in [here](https://huggingface.co/WFRaain/GOFA/tree/main) with file name `nb_instruct.pth`. 
-You can use this checkpoint to directly reproduce the results in the paper. 
 
 ## Citation
 ```

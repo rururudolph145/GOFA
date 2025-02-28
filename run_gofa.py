@@ -1,11 +1,8 @@
 import argparse
 import os
-from collections import OrderedDict
 from datetime import timedelta
 
-import shutil
 from lightning.pytorch.loggers import WandbLogger
-from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
 from gp.utils.utils import (load_yaml, combine_dict, merge_mod, setup_exp, set_random_seed, )
 from gp.lightning.metric import (EvalKit, )
@@ -13,8 +10,8 @@ from gp.lightning.data_template import DataModule
 from gp.lightning.training import lightning_fit, lightning_test
 from gp.lightning.module_template import ExpConfig
 from lightning_model import GraphTextPredLightning
-from gofa_models.model import GOFA
-from gofa_models.config import GOFALlamaConfig, GOFAMistralConfig
+from model import GOFA
+from modules.gofa import GOFAMistralConfig
 
 from torchmetrics import AUROC, Accuracy, MeanMetric, MeanAbsoluteError, Perplexity
 from utils import (MultiApr, MultiAuc, SimAnyAuc, normalized_loss_factory, sentence_base, sentence_perplexity)
@@ -27,35 +24,33 @@ from types import SimpleNamespace
 
 
 def main(params):
-    if params.base_llm == 'llama7b':
-        from modules.gofa_icae_llama_modeling import ModelArguments, TrainingArguments
-        gofa_config = GOFALlamaConfig
-    elif params.base_llm == 'mistral7b':
-        from modules.gofa_icae_mistral_modeling import ModelArguments, TrainingArguments
+    if params.base_llm == 'mistral7b':
+        from modules.gofa.gofa import TrainingArguments
+        from modules.gofa.gofa import ModelArguments
         gofa_config = GOFAMistralConfig
     else:
         raise NotImplementedError(params.base_llm + " is not supported. Please choose from: llama7b, mistral7b,")
-    if params.mode.endswith("gen"):
+    if params.mode=="generate":
         params.last_save = False
 
     wandb_logger = WandbLogger(project=params.log_project, name=f"{params.exp_name}_{params.llm_name}",
                                save_dir=params.exp_dir, offline=params.offline_log, )
     print("available devices: ", torch.cuda.device_count())
-    checkpoint_dir = os.path.join(params.exp_dir, params.log_project)
     if params.ckpt_save_path is not None:
         date = params.exp_dir.split("/")[-1]
         params.ckpt_save_path = params.ckpt_save_path+"/" + date
     params_dict = vars(params)
     wandb_logger.log_table(key="hparams", columns=list(params_dict.keys()), data=[list(params_dict.values())])
     model_args, training_args, gofa_args = ModelArguments(), TrainingArguments(), gofa_config(
-        num_layers=params.num_layers, gnn_type=params.gnn_type, interleave=params.interleave, gating=params.gating)
+        num_layers=params.num_layers, gnn_type=params.gnn_type, interleave=params.interleave, gating=params.gating, fuse_type=params.fuse_type, gnn_mlp_type=params.mlp_type)
     model_args.dec_lora = params.dec_lora
-    model_args.llama_pretrain_checkpoint = params.llama_pretrain_checkpoint
-    model_args.mistral_pretrain_checkpoint = params.mistral_pretrain_checkpoint
     training_args.model_max_length = params.llm_max_length
     if params.training_precision == "bf16-mixed":
         training_args.bf16 = True
         gofa_args.llama_dtype = torch.bfloat16
+    else:
+        training_args.bf16 = False
+        gofa_args.llama_dtype = torch.float16
     gofa_args.gnn_mlp_type = params.mlp_type
 
     def data_size_filter(data: TAGData, **kwargs):
@@ -71,14 +66,14 @@ def main(params):
         #                                          Pretrain Task                                             #
         ######################################################################################################
         task_names = ["mag240m", "mag240m", "mag240m", "arxiv", "arxiv", "arxiv", "pubmed_node", "pubmed_node", "pubmed_node",
-                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"][3:4]
+                      "wiki_graph", "wiki_graph", "wiki_graph", "wikikg90m", "wikikg90m", "wikikg90m", "ultrachat200k"]
 
         save_names = ["pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
                       "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_",
-                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"][3:4]
+                      "pretrain_", "pretrain_IR_kc_", "pretrain_IR_ck_", "pretrain_"]
 
         filter_func = data_size_filter
-        save_names = [name + str(params.last_epochs + 1) for name in save_names]
+        save_names = [name + str(params.last_epochs) for name in save_names]
         train_task = GOFAPretrainTaskWrapper(task_names, root=params.data_root_path, save_name=save_names,
                                              fast_data_load=True, filter_func=filter_func)
 
@@ -190,7 +185,7 @@ def main(params):
                 train_params += [param]
     optimizer = torch.optim.AdamW(train_params, lr=params.lr, weight_decay=params.l2, betas=(0.9, 0.95))
     # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.5)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps, eta_min=params.lr *0.1)
     lr_scheduler_config = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
     # lr_scheduler_config = None
 
@@ -232,16 +227,7 @@ def main(params):
     pred_model = GraphTextPredLightning(exp_config, model, metrics)
     if params.load_model:
         print("-"*60+"LOADING"+"-"*60)
-        if os.path.isdir(params.load_dir):
-            prefix = "_forward_module.model.llm_model.model.icae.base_model.model.model.g_layers."
-            state_dict = get_fp32_state_dict_from_zero_checkpoint(params.load_dir)
-            partial_dict = OrderedDict()
-            for s in state_dict:
-                if s.startswith(prefix):
-                    partial_dict[s[len(prefix):]] = state_dict[s]
-            model.load_partial(state_dict=partial_dict)
-        else:
-            model.load_partial(load_dir=params.load_dir)
+        model.load_partial(load_dir=params.load_dir)
     strategy = "deepspeed_stage_2" if torch.cuda.device_count() > 1 else "auto"
 
     if params.run_mode == "inf":

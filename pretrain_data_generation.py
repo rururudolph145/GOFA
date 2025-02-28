@@ -36,35 +36,35 @@ def generate_default_task(dataset, split, sample_range, node_task_save_name, num
                                         )
     del node_task
     gc.collect()
-    # key_to_content_task = GOFAPretrainTaskWrapper(task_names=dataset,
-    #                                               root=DATA_ROOT,
-    #                                               split=split,
-    #                                               sample_size=key_to_content_sample_range,
-    #                                               save_name=key_to_content_task_save_name,
-    #                                               save_data=True,
-    #                                               from_saved=False,
-    #                                               num_workers=num_workers,
-    #                                               hop=hop,
-    #                                               max_nodes_per_hop=num_nodes_per_hop,
-    #                                               pretrain_tasks=["IR"]
-    #                                              )
-    # del key_to_content_task
-    # gc.collect()
-    # content_to_key_task = GOFAPretrainTaskWrapper(task_names=dataset,
-    #                                               root=DATA_ROOT,
-    #                                               split=split,
-    #                                               sample_size=content_to_key_sample_range,
-    #                                               save_name=content_to_key_task_save_name,
-    #                                               save_data=True,
-    #                                               from_saved=False,
-    #                                               num_workers=num_workers,
-    #                                               hop=hop,
-    #                                               max_nodes_per_hop=num_nodes_per_hop,
-    #                                               pretrain_tasks=["IR"],
-    #                                               content_to_key=True
-    #                                               )
-    # del content_to_key_task
-    # gc.collect()
+    key_to_content_task = GOFAPretrainTaskWrapper(task_names=dataset,
+                                                  root=DATA_ROOT,
+                                                  split=split,
+                                                  sample_size=key_to_content_sample_range,
+                                                  save_name=key_to_content_task_save_name,
+                                                  save_data=True,
+                                                  from_saved=False,
+                                                  num_workers=num_workers,
+                                                  hop=hop,
+                                                  max_nodes_per_hop=num_nodes_per_hop,
+                                                  pretrain_tasks=["IR"]
+                                                 )
+    del key_to_content_task
+    gc.collect()
+    content_to_key_task = GOFAPretrainTaskWrapper(task_names=dataset,
+                                                  root=DATA_ROOT,
+                                                  split=split,
+                                                  sample_size=content_to_key_sample_range,
+                                                  save_name=content_to_key_task_save_name,
+                                                  save_data=True,
+                                                  from_saved=False,
+                                                  num_workers=num_workers,
+                                                  hop=hop,
+                                                  max_nodes_per_hop=num_nodes_per_hop,
+                                                  pretrain_tasks=["IR"],
+                                                  content_to_key=True
+                                                  )
+    del content_to_key_task
+    gc.collect()
 
 def generate_mag240m(epoch):
     dataset = "mag240m"
@@ -287,10 +287,10 @@ def generate_wikikg90m(epoch):
 
 
 if __name__ == "__main__":
-    #sample_datasets = ["mag240m", "arxiv", "wiki_graph", "pubmed_node", "ultrachat200k", "wikikg90m"]
-    # sample_datasets = ["mag240m", "arxiv", "pubmed_node"]
-    # sample_datasets = ["wikikg90m"]
-    sample_datasets = ["wiki_dump_graph", "ultrachat200k"]
+    sample_datasets = ["mag240m", "arxiv", "wiki_graph", "pubmed_node", "ultrachat200k", "wikikg90m"]
+    sample_datasets = ["mag240m", "arxiv", "pubmed_node"]
+    sample_datasets = ["wikikg90m"]
+    # sample_datasets = ["wiki_dump_graph", "ultrachat200k"]
     SAMPLE_EPOCH = 2
     START_EPOCH = 0
     def random_seed(length):
