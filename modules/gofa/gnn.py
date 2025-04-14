@@ -247,7 +247,7 @@ class GOFAGNNConv(MessagePassing):
         self.in_dim = config.dim
         self.in_layer = config.mem_token
         self.dropout = config.dropout
-        self.head = config.head
+        self.head = config.dim
 
         assert self.in_dim % self.head == 0
 

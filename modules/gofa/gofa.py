@@ -17,8 +17,8 @@ from modules.utils import safe_download_hf_file
 
 
 class GOFAMistralConfig(MistralConfig):
-    def __init__(self, dim=4096, num_layers=5, mem_token=128, head=32, add_self_loops=True, dropout=0.0,
-                 llama_dtype=torch.float16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="rotary", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", trainable_layer=5, fuse_type="interleave", **kwargs):
+    def __init__(self, dim=4096, num_layers=6, mem_token=128, head=32, add_self_loops=True, dropout=0.0,
+                 llama_dtype=torch.float16, gnn_hidden_act="relu", gnn_mlp_type="gp", gnn_type="index", position_encoding="none", pretraining_tp=0, gating=True, interleave=True, mp_att="concat", trainable_layer=5, fuse_type="interleave", **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.mem_token = mem_token
@@ -110,7 +110,7 @@ class GOFAMistral(torch.nn.Module):
 
     def load_pretrained(self, pretrained_path=None):
         if pretrained_path is None:
-            pretrained_path = safe_download_hf_file("WFRaain/GOFA", "mem_ckpt.pth", self.model_args.checkpoint_dir,
+            pretrained_path = safe_download_hf_file("WFRaain/GOFA", "mistral_qamag03_best_ckpt.pth", self.model_args.checkpoint_dir,
                                         repo_type=None)
         self.load_partial(pretrained_path)
 
@@ -173,7 +173,7 @@ class GOFAMistral(torch.nn.Module):
         prompt_input_texts = ["" if (p.startswith("Please complete the sentence of the node") or p == "") else p for p
                               in prompt_texts]
         emb = emb[g.question_index]
-        generated_text = self.infer(emb, prompt=prompt_input_texts, max_lenght=max_length)
+        generated_text = self.infer(emb, prompt=prompt_input_texts, max_length=max_length)
         return generated_text
 
     def encode(self, data, graph=None, partial_grad=None):
