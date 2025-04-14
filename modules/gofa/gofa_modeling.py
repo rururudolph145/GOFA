@@ -6,7 +6,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 
-from .gnn import GOFADecoderLayer, GOFAGatedDecoderLayer
+from .gnn import GOFADecoderLayer, GOFAGatedDecoderLayer, GOFAGNNConv
 from transformers import MistralConfig, GenerationMixin
 from transformers.models.mistral.modeling_mistral import MistralPreTrainedModel, MistralRMSNorm, MistralModel
 from transformers.cache_utils import Cache, DynamicCache
@@ -35,9 +35,27 @@ class GOFAMistralModel(MistralModel):
         super().__init__(config)
         self.gofa_config = gofa_config
 
-        self.g_layers = nn.ModuleList([GOFAGatedDecoderLayer(gofa_config, layer_idx=i) for i in range(gofa_config.num_layers)])
+        # self.g_layers = nn.ModuleList([GOFAGatedDecoderLayer(gofa_config, layer_idx=i) for i in range(gofa_config.num_layers)])
+        self.g_layers = nn.ModuleList(
+            [GOFAGNNConv(gofa_config) for i in range(gofa_config.num_layers)])
 
         self.post_init()
+
+    def align_weight(self):
+        n_layers = len(self.layers)
+        inactive_layers = n_layers - len(self.g_layers)
+        partial_state_dict = OrderedDict()
+        source_dict = self.layers.state_dict()
+        for layer_name in source_dict:
+            name_split = layer_name.split(".")
+            layer_ind = int(name_split[0])
+            if layer_ind >= inactive_layers:
+                name_split[0] = str(layer_ind - inactive_layers)
+                if name_split[2] in ["v_proj", "q_proj", "k_proj", "o_proj"]:
+                    name_split[2] = "g"+name_split[2]
+                partial_state_dict[".".join(name_split)] = source_dict[layer_name]
+
+        self.g_layers.load_state_dict(partial_state_dict, strict=False)
 
 
     def forward(
@@ -175,25 +193,26 @@ class GOFAMistralModel(MistralModel):
 
 
 class LLMGraphCombiner(torch.nn.Module):
-    def __init__(self, init_theta=0.0):
+    def __init__(self, init_theta=0.0, hidden_size=4096):
         super().__init__()
         self.theta = nn.Parameter(torch.tensor([init_theta]))
+        self.norm = MistralRMSNorm(hidden_size)
 
     def forward(self, target_feat, additional_feat, val_mask=None):
-        alpha = self.theta.sigmoid()
+        alpha = self.theta.tanh().to(additional_feat.dtype)
         if val_mask is None:
-            return target_feat * alpha + additional_feat*(1-alpha)
+            return target_feat + additional_feat * alpha
         # print(alpha)
         # print((target_feat[val_mask]**2).sum(dim=-1).mean())
         # print((additional_feat ** 2).sum(dim=-1).mean())
         output = torch.zeros_like(target_feat, dtype=additional_feat.dtype)
-        output[val_mask] = additional_feat.view(-1, additional_feat.size()[-1]) * (1-alpha)
+        output[val_mask] = additional_feat.view(-1, additional_feat.size()[-1]) * alpha
 
-        val_multiplier = torch.zeros_like(target_feat)
-        val_multiplier[torch.logical_not(val_mask)] = 1
-        val_multiplier[val_mask] = alpha
+        # val_multiplier = torch.zeros_like(target_feat)
+        # val_multiplier[torch.logical_not(val_mask)] = 1
+        # val_multiplier[val_mask] = alpha
 
-        return val_multiplier * target_feat + output
+        return self.norm(target_feat + output)
 
 
 class GOFAMistralParallelModel(MistralModel):
@@ -318,9 +337,9 @@ class GOFAMistralParallelModel(MistralModel):
                 output = self.g_layers[2][g_layer_idx](output)
                 graph_output = torch.cat([output, mem_repr[cur_node_size:]],
                                          dim=0)  # gnn_output = torch.zeros_like(hidden_states, dtype=output.dtype)  # gnn_output[mem_mask] = output.view(-1, output.size()[-1])  # hidden_states = hidden_states * torch.logical_not(mem_mask).unsqueeze(2) + gnn_output
+                graph_output = graph_output.to(self.gofa_config.llama_dtype)
             else:
                 graph_output = None
-
             if g_layer_idx < 0 and partial_grad:
                 with torch.no_grad():
                     layer_outputs = self.llm_forward(decoder_layer, hidden_states, causal_mask, position_ids, past_key_values, output_attentions, use_cache, cache_position, position_embeddings, flash_attn_kwargs)
@@ -332,12 +351,14 @@ class GOFAMistralParallelModel(MistralModel):
             hidden_states = layer_outputs[0]
             if graph_output is not None:
                 hidden_states = self.g_layers[1][g_layer_idx](hidden_states, graph_output, mem_mask)
+                hidden_states = hidden_states.to(self.gofa_config.llama_dtype)
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
         if graph is not None:
             hidden_states = self.g_layers[3](hidden_states)
+            hidden_states = hidden_states.to(self.gofa_config.llama_dtype)
         else:
             hidden_states = self.norm(hidden_states)
 

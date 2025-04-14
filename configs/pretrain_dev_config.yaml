@@ -3,7 +3,6 @@ ckpt_save_path: "./gofa_deepspeed_ckpt/"
 last_epochs: 0
 num_epochs: 1
 grad_acc_step: 64
-num_layers: 5
 l2: 0.1
 lr: 0.0003
 mode: "decode"
