@@ -37,7 +37,7 @@ def main(params):
     if params.mode=="generate":
         params.last_save = False
 
-    wandb_logger = WandbLogger(project=params.log_project, name=f"{params.exp_name}_{params.llm_name}",
+    wandb_logger = WandbLogger(project=params.log_project, name=f"{params.exp_name}",
                                save_dir=params.exp_dir, offline=params.offline_log, )
     print("available devices: ", torch.cuda.device_count())
     if params.ckpt_save_path is not None:
