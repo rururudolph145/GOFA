@@ -15,14 +15,22 @@ git clone https://github.com/JiaruiFeng/TAGLAS.git
 ```
 
 The project logs onto WandB, check this [site](https://docs.wandb.ai/quickstart/) for online logging. If you prefer local logging, simply set `offline_log` in `./configs/default_config.yaml` to True.
+
+## Checkpoints
+We provide both the pre-trained and instruction-tuned checkpoints in the [Huggingface repository](https://huggingface.co/WFRaain/GOFA/tree/main). Specifically:
+
+`mistral_qamag03_best_ckpt.pth`: The pre-trained checkpoint.
+
+`nb_instruct.pth`: The instruction fine-tuned checkpoint, which can be used to replicate the results of GOFA-T in the paper.
+
 ## Use GOFA
 
 A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the ```sample_graph.json``` file to specify your graph, GOFA works on any graph specified in the same format. If you plan to do graph completion, add the target node id to ```complete``` field, if you plan to do QA, add the target node id to ```question``` field.
 
-The pretrained checkpoints and LoRA weight will be automatically loaded.
+The **pretrained checkpoints** and LoRA weights will be automatically loaded.
 
 ## Overview
-`run_gofa.py` is the main entry point to train GOFA model. The architecture of GOFA is depicted below.
+`run_gofa.py` is the main entry point to train the GOFA model. The architecture of GOFA is depicted below.
 
 ![alt text](figures/model.png)
 
@@ -33,7 +41,7 @@ For example,
 python run_gofa.py --override ./configs/pretrain_dev_config.yaml
 ```
 
-You can also further specify argument by string input seperated by spaces. For example,
+You can also further specify the argument by a string input separated by spaces. For example,
 
 ```
 python run_gofa.py --override ./configs/pretrain_dev_config.yaml l2 0.1 lr 0.00001
@@ -44,13 +52,13 @@ By default, GOFA use deepspeed ZeRO stage2 provided by pytorch-lightning for dis
 The model implementation is in './modules/gofa/'.
 
 ## Pre-training
-Pre-training require large computation resource and time (4 days on 4 Nvidia A100 80GB). Refer to the example in ```chat_gofa.py``` on how to load our pretrained checkpoints.
+Pre-training requires large computational resources and time (4 days on 4 Nvidia A100 80GB). Refer to the example in ```chat_gofa.py``` on how to load our pretrained checkpoints.
 To run the pretraining yourself, please first generate pretraining data using the following script. 
 
 ```
 python pretrain_data_generation.py
 ```
-The above code will generate three pretrain data subset. The generation process require large memory and will last for long time. Please allocate enough resource for generation.
+The above code will generate three pretraining data subsets. The generation process requires a large memory and will last for a long time. Please allocate enough resources for generation.
 
 The pretraining datasets all follow the graph completion paradigm as depicted below:
 
@@ -60,9 +68,9 @@ After data generation, run the following line to start the pretraining:
 ```
 python run_gofa.py --override ./configs/pretrain_dev_config.yaml
 ```
-Check `./configs/pretrain_dev_config.yaml` for hyperparameters settings and specifying the correct pretraining dataset.
+Check `./configs/pretrain_dev_config.yaml` for hyperparameter settings and specify the correct pretraining dataset.
 
-For example, after first epoch, a deepspeed checkpoint will be automatically saved to `{ckpt_save_path}/{experiment start time}` specified in the config. If you want to train the second epoch on the second batch of data, change `last_epoch` to 1 and `ckpt_path` to the saved checkpoint, and run the same command.
+For example, after the first epoch, a deepspeed checkpoint will be automatically saved to `{ckpt_save_path}/{experiment start time}` specified in the config. If you want to train the second epoch on the second batch of data, change `last_epoch` to 1 and `ckpt_path` to the saved checkpoint, and run the same command.
 
 Besides the deepspeed checkpoints, a copy of trainable parameters will be saved under `{root_path}/saved_exp/{experiment start time}` with the name `last_epoch_ckpt.pth`. **You can load this checkpoint for downstream fine-tuning. We also shared pretrained checkpoints in this format.**
 
@@ -80,14 +88,14 @@ To specify the data used for training and evaluation, you will modify the `train
 The list of available datasets is in `./TAGLAS/interfaces.py`.
 
 ## Evaluation and inference
-To explore the generation result of GOFA, you also directly run the inference mode with: 
+To explore the generation result of GOFA, you can also directly run the inference mode with: 
 ```
 python run_gofa.py --override ./configs/inference_config.yaml load_dir {/path/to/ckpt}
 ```
-Please modify the config file for selecting corresponding dataset. Note that for both zero-shot and supervised experiment, the
-trained model should be evaluated under inference mode to obtain the correct evaluation result. 
+Please modify the config file to select the corresponding dataset. Note that for both the zero-shot and supervised experiments, the
+trained model should be evaluated under inference mode to obtain the correct evaluation result. To replicate the results of GOFA-T in the paper, please download and set the load_dir to our uploaded [checkpoint](https://huggingface.co/WFRaain/GOFA/blob/main/nb_instruct.pth) `nb_instruct.pth` (See Checkpoint section).
 
-GOFA generates interesting behavior on questions it never sees as shown below:
+GOFA generates interesting behavior on questions it has never seen, as shown below:
 ![alt text](figures/quares.png)
 
 
