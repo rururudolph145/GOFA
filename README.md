@@ -15,9 +15,11 @@ git clone https://github.com/JiaruiFeng/TAGLAS.git
 ```
 
 The project logs onto WandB, check this [site](https://docs.wandb.ai/quickstart/) for online logging. If you prefer local logging, simply set `offline_log` in `./configs/default_config.yaml` to True.
-## Use GOFA
+## Use GOFA (Please read if you wish to do inference with GOFA in other data format like PyG)
 
 A minimalistic example to use GOFA is in ```chat_gofa.py```. You can modify the ```sample_graph.json``` file to specify your graph, GOFA works on any graph specified in the same format. If you plan to do graph completion, add the target node id to ```complete``` field, if you plan to do QA, add the target node id to ```question``` field.
+
+If you have a PyG Data object, you can convert it into GOFA recognizable format using [prepare_gofa_graph_input_from_pyg](https://github.com/LechengKong/GOFA/blob/9f56cd036d81737760d9801f63a020736472d012/modules/utils.py#L49). Your PyG data should have x and edge_attr as node and edge text features. You should also specify prompt and completion node using binary array as specified [here](https://github.com/LechengKong/GOFA/blob/9f56cd036d81737760d9801f63a020736472d012/modules/utils.py#L30)
 
 The pretrained checkpoints and LoRA weight will be automatically loaded.
 
