@@ -27,6 +27,30 @@ def safe_download_hf_file(repo_id,
     return target_dir
 
 
+def pyg_to_gofa_dict(pyg_graph):
+    '''
+    Assuming PyG graph has the following feature:
+    x: node text feature,
+    edge_attr: edge text feature,
+    edge_index: edges,
+    question: a binary 1-d array that has the same size as the # of nodes where 1 represents that a node is a question
+    prompt node.
+    completion: a binary 1-d array that has the same size as the # of nodes where 1 represents that a node is a
+    completion prompt node.
+    '''
+    node_features = {str(i): n_feat for i, n_feat in enumerate(pyg_graph.x)}
+    edge_features = [{"source": int(src), "target": int(tgt), "relation": {"content": e_feat}} for src, tgt, e_feat in zip(pyg_graph.edge_index[0], pyg_graph.edge_index[1], pyg_graph.edge_attr)]
+    question = pyg_graph.question.nonzero()[0].tolist()
+    completion = pyg_graph.completion.nonzero()[0].tolist()
+    graph = {"question": question, "complete": completion, "node": node_features, "edge": edge_features}
+    return graph
+
+
+def prepare_gofa_graph_input_from_pyg(pyg_graph, device=None):
+    gofa_graph_dict = pyg_to_gofa_dict(pyg_graph)
+    return prepare_gofa_graph_input(gofa_graph_dict, device)
+
+
 def textualize_graph(data):
     # mapping from object id to index
     nodes = []
