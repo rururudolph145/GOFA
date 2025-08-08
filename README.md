@@ -7,6 +7,18 @@ First, clone the code repository and move to the code file. Then, create the pyt
 conda env create -f environment.yml
 ```
 
+If Conda is not available, an equivalent Python environment can be created
+with [uv](https://docs.astral.sh/uv/) using the pinned dependencies in
+`requirements.txt`:
+
+```
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+This approach keeps the package versions consistent with `environment.yml`.
+
 If you want to train the GOFA model from scratch, you will need [TAGLAS](https://github.com/JiaruiFeng/TAGLAS) dataset.
 
 Clone the code of datasets under the root directory of GOFA:
